@@ -45,6 +45,8 @@ button,select,input{font:inherit;color:inherit}
 .h span{font-size:11.5px;color:var(--text-3)}
 
 .rows{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}
+.vsep{height:1px;background:var(--line);margin:13px 0 10px}
+.subh{font-size:12px;color:var(--text-3);margin-bottom:8px}
 .row{display:flex;align-items:center;gap:11px;padding:11px 13px;cursor:pointer;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}
 .row:hover{background:var(--sunken)}
@@ -205,7 +207,6 @@ button,select,input{font:inherit;color:inherit}
             <button class="on" data-t="usb">USB 连接</button>
             <button data-t="wifi">无线连接</button>
           </div>
-          <div class="rows" id="devs"></div>
           <div class="wifi" id="wifiPanel" hidden>
             <div class="wt">开启无线调试后点「扫描」，自动发现局域网设备，首次连接填配对码。<span class="tip inline">?<span class="bub">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</span></span></div>
             <div class="wr" style="margin-bottom:9px">
@@ -222,6 +223,9 @@ button,select,input{font:inherit;color:inherit}
             </div>
             <div class="wm" id="wifiMsg"></div>
           </div>
+          <div class="vsep"></div>
+          <div class="subh">连接设备</div>
+          <div class="rows" id="devs"></div>
         </div>
         <div class="sec">
           <div class="h"><b>投屏方式</b></div>
