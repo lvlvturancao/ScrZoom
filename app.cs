@@ -154,8 +154,10 @@ public class MainForm : Form
             case "vd-template-delete": return VdTemplateDelete(p);
             case "apps-list": return await AppsList(p);
             case "apps-launch": return await LaunchApp(p);
+            case "app-icon": return await AppIcon(p);
             case "about": return About();
             case "save-reward-qr": return SaveRewardQr();
+            case "open-url": return OpenUrl(p);
             case "restore": return await Restore(p);
             case "to-wireless": return await ToWireless(p);
             case "to-wired": return await ToWired(p);
@@ -175,6 +177,35 @@ public class MainForm : Form
         if (!string.IsNullOrEmpty(id)) { a.Add("-s"); a.Add(id); }
         a.AddRange(args);
         return await Run(adbExe, a);
+    }
+
+    async Task<byte[]> AdbRaw(string id, params string[] args)
+    {
+        if (adbExe == null) return null;
+        var a = new List<string>();
+        if (!string.IsNullOrEmpty(id)) { a.Add("-s"); a.Add(id); }
+        a.AddRange(args);
+        return await Task.Run(() => RunRaw(adbExe, a));
+    }
+    static byte[] RunRaw(string exe, IEnumerable<string> args, int ms = 40000)
+    {
+        var psi = new ProcessStartInfo(exe, string.Join(" ", args.Select(EscapeArg)))
+        {
+            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
+        };
+        try
+        {
+            using (var pr = Process.Start(psi))
+            {
+                using (var msOut = new MemoryStream())
+                {
+                    pr.StandardOutput.BaseStream.CopyTo(msOut);
+                    if (!pr.WaitForExit(ms)) { try { pr.Kill(); } catch { } return null; }
+                    return msOut.ToArray();
+                }
+            }
+        }
+        catch { return null; }
     }
 
     class Sh { public bool ok; public string text; }
@@ -712,7 +743,7 @@ public class MainForm : Form
     {
         string id = Ps(p, "id");
         if (id.Length == 0) return Err("先选设备");
-        var r = await Adb(id, "shell", "pm", "list", "packages", "-3", "-f");
+        var r = await Adb(id, "shell", "pm", "list", "packages", "-f");
         var pkgs = new List<string>();
         foreach (var line in r.text.Split('\n'))
         {
@@ -723,8 +754,17 @@ public class MainForm : Form
         }
         pkgs = pkgs.Distinct().OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
 
+        // 系统应用集合：系统应用不解析启动入口（打开时直接用包名），仅第三方参与缓存解析
+        var sysPkgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sr = await Adb(id, "shell", "pm", "list", "packages", "-s");
+        foreach (var line in sr.text.Split('\n'))
+        {
+            var l = line.Trim();
+            if (l.StartsWith("package:")) { var nm = l.Substring(8).Trim(); if (nm.Length > 0) sysPkgs.Add(nm); }
+        }
+
         var cache = LoadAppsCache();
-        var need = pkgs.Where(x => !cache.ContainsKey(x)).ToList();
+        var need = pkgs.Where(x => !sysPkgs.Contains(x) && !cache.ContainsKey(x)).ToList();
         if (need.Count > 0)
         {
             var sem = new SemaphoreSlim(6);
@@ -742,7 +782,7 @@ public class MainForm : Form
 
         var apps = pkgs.Select(pkg => (object)new Dictionary<string, object>
         {
-            { "pkg", pkg }, { "activity", cache.ContainsKey(pkg) ? cache[pkg] : "" }
+            { "pkg", pkg }, { "activity", cache.ContainsKey(pkg) ? cache[pkg] : "" }, { "sys", sysPkgs.Contains(pkg) }
         }).ToList();
         return new Dictionary<string, object> { { "ok", true }, { "apps", apps }, { "total", pkgs.Count }, { "fresh", need.Count } };
     }
@@ -814,6 +854,76 @@ public class MainForm : Form
     {
         var ids = await ListDisplayIds(id);
         return ids.Count > 0 ? ids.Max() : 0;
+    }
+
+    // ── 应用图标：从设备 APK 提取（toybox unzip），本地缓存 ──
+    async Task<object> AppIcon(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id"), pkg = Ps(p, "pkg");
+        if (id.Length == 0 || pkg.Length == 0) return Err("缺参数");
+        string dir = Path.Combine(DataDir, "app-icons");
+        try { Directory.CreateDirectory(dir); } catch { }
+        string cachePath = Path.Combine(dir, San(pkg) + ".png");
+        if (File.Exists(cachePath))
+        {
+            try { return PngResult(cachePath); } catch { }
+        }
+        var r = await Adb(id, "shell", "pm", "path", pkg);
+        string apk = "";
+        foreach (var line in r.text.Split('\n'))
+        {
+            var l = line.Trim();
+            if (l.StartsWith("package:")) { apk = l.Substring(8).Trim(); if (apk.Length > 0) break; }
+        }
+        if (apk.Length == 0) return new Dictionary<string, object> { { "ok", false }, { "icon", false } };
+        var ls = await Adb(id, "shell", "unzip", "-l", apk);
+        string pick = null; int pickRank = int.MaxValue;
+        foreach (var line in ls.text.Split('\n'))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(line, @"([\w./-]+\.png)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success || m.Value.IndexOf("ic_launcher", StringComparison.OrdinalIgnoreCase) < 0) continue;
+            string f = m.Groups[1].Value;
+            int rank = IconRank(f);
+            if (rank < pickRank) { pickRank = rank; pick = f; }
+        }
+        if (pick == null) return new Dictionary<string, object> { { "ok", false }, { "icon", false } };
+        var bytes = await AdbRaw(id, "exec-out", "unzip", "-p", apk, pick);
+        if (bytes == null || bytes.Length < 100) return new Dictionary<string, object> { { "ok", false }, { "icon", false } };
+        try { File.WriteAllBytes(cachePath, bytes); } catch { }
+        try { return PngResult(cachePath); } catch { }
+        return new Dictionary<string, object> { { "ok", false }, { "icon", false } };
+    }
+    static object PngResult(string path)
+    {
+        var b = File.ReadAllBytes(path);
+        return new Dictionary<string, object> { { "ok", true }, { "png", "data:image/png;base64," + Convert.ToBase64String(b) } };
+    }
+    static int IconRank(string f)
+    {
+        var l = f.ToLowerInvariant();
+        if (l.Contains("xxhdpi")) return 1;
+        if (l.Contains("xhdpi")) return 2;
+        if (l.Contains("hdpi")) return 3;
+        if (l.Contains("mdpi")) return 4;
+        if (l.Contains("xxxhdpi")) return 5;
+        if (l.Contains("drawable")) return 6;
+        return 7;
+    }
+    static string San(string s)
+    {
+        var bad = Path.GetInvalidFileNameChars();
+        return new string(s.Select(c => bad.Contains(c) ? '_' : c).ToArray());
+    }
+
+    object OpenUrl(Dictionary<string, object> p)
+    {
+        string u = Ps(p, "url");
+        if (u.StartsWith("https://") || u.StartsWith("http://"))
+        {
+            try { Process.Start(new ProcessStartInfo(u) { UseShellExecute = true }); }
+            catch (Exception ex) { return Err("打开失败：" + ex.Message); }
+        }
+        return new Dictionary<string, object> { { "ok", true } };
     }
 
     // ── 关于与打赏 ──

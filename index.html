@@ -50,6 +50,8 @@ button,select,input{font:inherit;color:inherit}
 .row:hover{background:var(--sunken)}
 .row.on{background:var(--accent-soft)}
 .row .ic{width:28px;height:28px;border-radius:6px;border:1px solid var(--line);background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.row .ic.ai{overflow:hidden;font-size:13px;font-weight:700}
+.row .ic.ai img{width:28px;height:28px;display:block;object-fit:contain}
 .row .nm{font-size:12.5px;font-weight:600}
 .row .mt{font-size:11px;color:var(--text-3);margin-top:1px;font-variant-numeric:tabular-nums}
 .row .sp{flex:1}
@@ -120,6 +122,8 @@ button,select,input{font:inherit;color:inherit}
 #bubHost .bub::before{content:'';position:absolute;left:var(--ar,50%);top:-5px;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:#22272c}
 #bubHost .bub.up::before{top:auto;bottom:-5px}
 .tip.inline{margin-left:6px}
+.chk{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-2);cursor:pointer;user-select:none;margin-left:4px}
+.chk input{accent-color:var(--accent);cursor:pointer}
 
 .foot{border-top:1px solid var(--line);background:var(--surface);padding:11px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
 .cmd{font-family:var(--mono);font-size:11px;color:var(--text-2);background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:6px 10px;max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -165,6 +169,7 @@ button,select,input{font:inherit;color:inherit}
 .ab-don p{font-size:11.5px;color:var(--text-2);margin:7px 0;line-height:1.7}
 .ab-don img{width:200px;height:200px;border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff;object-fit:contain}
 .ab-lic{font-size:10.5px;color:var(--text-3);margin:12px 0}
+.ab-lic a{color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent-soft)}
 </style>
 </head>
 <body>
@@ -258,7 +263,8 @@ button,select,input{font:inherit;color:inherit}
         </div>
         <div class="sec">
           <div class="h"><b>设备应用</b>
-            <span class="tip">?<span class="bub">点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块。列表读取设备已安装的第三方应用，本地缓存增量解析。</span></span>
+            <span class="tip">?<span class="bub">点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块。列表读取设备已安装的应用，本地缓存增量解析；默认只显示第三方应用，勾选「显示系统应用」可包含系统应用。</span></span>
+            <label class="chk"><input type="checkbox" id="chkShowSys"> 显示系统应用</label>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnAppsRefresh">刷新列表</button>
           </div>
@@ -339,7 +345,7 @@ button,select,input{font:inherit;color:inherit}
       <p>打赏完全自愿，不影响任何功能使用。</p>
       <button class="b2" id="btnSaveQr">保存二维码到桌面</button>
     </div>
-    <div class="ab-lic">GPL-3.0 开源协议 · 源码见 GitHub</div>
+    <div class="ab-lic">GPL-3.0 开源协议 · <a href="https://github.com/lvlvturancao/ScrZoom" data-ext>GitHub 源码</a></div>
     <button class="go" id="btnAboutClose">关闭</button>
   </div>
 </div>
@@ -377,6 +383,7 @@ const api = {
   vdTemplateSave: (o) => call('vd-template-save', o),
   vdTemplateDelete: (name) => call('vd-template-delete', { name }),
   appsList: (id) => call('apps-list', { id }),
+  appIcon: (id, pkg) => call('app-icon', { id, pkg }),
   appsLaunch: (o) => call('apps-launch', o),
   restore: (id) => call('restore', { id }),
   toWireless: (id) => call('to-wireless', { id }),
@@ -632,7 +639,8 @@ async function vdClean() {
         : (rs.length ? '已清理 ' + ok + ' 个残留虚拟屏' : '没有残留虚拟屏'));
   renderVdInfo();
 }
-let appsCache = [];
+let appsCache = [], appsShowSys = false;
+const appsIconCache = new Map();
 async function renderApps() {
   const d = cur();
   if (!d) { appsCache = []; $('appsBox').innerHTML = '<div class="empty">先选设备。</div>'; return; }
@@ -646,18 +654,45 @@ async function renderApps() {
 }
 function paintApps() {
   const kw = $('appFilter').value.trim().toLowerCase();
-  const list = appsCache.filter(a => !kw || a.pkg.toLowerCase().indexOf(kw) >= 0).slice(0, 80);
+  let list = appsCache.filter(a => (appsShowSys || !a.sys) && (!kw || a.pkg.toLowerCase().indexOf(kw) >= 0)).slice(0, 80);
   $('appsBox').innerHTML = list.length ? list.map(a => {
     const pkg = a.pkg, dot = pkg.lastIndexOf('.');
     const short = dot >= 0 ? pkg.substring(dot + 1) : pkg;
+    const ic = appsIconCache.get(pkg);
     return `<div class="row">
-      <span class="ic">${esc((short.charAt(0) || '?').toUpperCase())}</span>
-      <div><div class="nm">${esc(pkg)}</div><div class="mt">${a.activity ? '启动入口 ' + esc(a.activity) : '未解析到启动入口'}</div></div>
+      <span class="ic ai">${ic ? '<img src="' + ic + '" alt="">' : esc((short.charAt(0) || '?').toUpperCase())}</span>
+      <div><div class="nm">${esc(pkg)}</div><div class="mt">${a.activity ? '启动入口 ' + esc(a.activity) : (a.sys ? '系统应用' : '未解析到启动入口')}</div></div>
       <span class="sp"></span>
       <button class="b2" data-pkg="${esc(pkg)}" data-act="${esc(a.activity || '')}">打开</button>
     </div>`;
-  }).join('') : (appsCache.length ? '<div class="empty">没匹配到，换个关键词。</div>' : '<div class="empty">设备上没有第三方应用。</div>');
+  }).join('') : (appsCache.length ? '<div class="empty">没匹配到，换个关键词。</div>' : '<div class="empty">设备上没有应用。</div>');
   [].forEach.call($('appsBox').querySelectorAll('button'), b => b.onclick = () => openInVd(b.dataset.pkg, b.dataset.act));
+  loadIcons(list);
+}
+async function loadIcons(list) {
+  const d = cur(); if (!d) return;
+  const queue = list.map(a => a.pkg).filter(p => !appsIconCache.has(p));
+  let i = 0;
+  async function worker() {
+    while (i < queue.length) {
+      const pkg = queue[i++];
+      try {
+        const r = await api.appIcon(d.id, pkg);
+        if (r && r.ok && r.png) { appsIconCache.set(pkg, r.png); patchIcon(pkg, r.png); }
+        else appsIconCache.set(pkg, null);
+      } catch (e) { appsIconCache.set(pkg, null); }
+    }
+  }
+  for (let k = 0; k < 6; k++) worker();
+}
+function patchIcon(pkg, png) {
+  [].forEach.call($('appsBox').querySelectorAll('.row'), row => {
+    const btn = row.querySelector('button[data-pkg]');
+    if (btn && btn.dataset.pkg === pkg) {
+      const ic = row.querySelector('.ic.ai');
+      if (ic) ic.innerHTML = '<img src="' + png + '" alt="">';
+    }
+  });
 }
 async function openInVd(pkg, act) {
   const d = cur(); if (!d) return toast('先选设备', true);
@@ -810,6 +845,7 @@ $('btnTmplSave').onclick = tmplSave;
 $('btnTmplDel').onclick = tmplDelete;
 $('btnAppsRefresh').onclick = renderApps;
 $('appFilter').addEventListener('input', paintApps);
+$('chkShowSys').onchange = () => { appsShowSys = $('chkShowSys').checked; paintApps(); };
 $('btnRestore').onclick = async () => { const d = cur(); if (!d) return toast('没有在线设备', true); await api.restore(d.id); toast('已还原'); refresh(); };
 $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
 
@@ -829,6 +865,12 @@ $('btnSaveQr').onclick = async () => {
   const r = await api.saveRewardQr();
   toast(r && r.ok ? '二维码已保存到桌面' : ('保存失败：' + ((r && r.error) || '')), !(r && r.ok));
 };
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[data-ext]');
+  if (!a) return;
+  e.preventDefault(); e.stopPropagation();
+  try { window.chrome.webview.postMessage({ id: 0, action: 'open-url', payload: { url: a.href } }); } catch (err) { }
+});
 
 (async () => {
   mon = await api.monitor();
