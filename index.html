@@ -112,14 +112,13 @@ button,select,input{font:inherit;color:inherit}
 /* ── 信息提示：悬浮/点击显示说明，保持界面精简 ── */
 .tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:9.5px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:-1px}
 .tip:hover,.tip.open{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-.tip .bub{display:none;position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);width:280px;max-width:52vw;background:#22272c;color:#eef1f3;font-size:11px;line-height:1.7;font-weight:400;padding:10px 13px;border-radius:9px;box-shadow:0 12px 30px -8px rgba(0,0,0,.5);z-index:70;text-align:left;white-space:normal}
-.tip .bub b{color:#fff}
-.tip .bub::before{content:'';position:absolute;left:50%;top:-5px;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:#22272c}
-.tip:hover .bub,.tip.open .bub{display:block}
-.tip.up .bub{top:auto;bottom:calc(100% + 9px)}
-.tip.up .bub::before{top:auto;bottom:-5px}
-.tip.right .bub{left:auto;right:-10px;transform:none}
-.tip.right .bub::before{left:auto;right:16px}
+.tip .bub{display:none}
+#bubHost{position:fixed;top:0;left:0;z-index:999;pointer-events:none;display:none}
+#bubHost.show{display:block}
+#bubHost .bub{position:absolute;width:max-content;max-width:min(300px,calc(100vw - 24px));background:#22272c;color:#eef1f3;font-size:11px;line-height:1.7;font-weight:400;padding:10px 13px;border-radius:9px;box-shadow:0 12px 30px -8px rgba(0,0,0,.5);text-align:left;white-space:normal;overflow-wrap:break-word;word-break:break-word}
+#bubHost .bub b{color:#fff}
+#bubHost .bub::before{content:'';position:absolute;left:var(--ar,50%);top:-5px;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:#22272c}
+#bubHost .bub.up::before{top:auto;bottom:-5px}
 .tip.inline{margin-left:6px}
 
 .foot{border-top:1px solid var(--line);background:var(--surface);padding:11px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
@@ -837,18 +836,63 @@ $('btnSaveQr').onclick = async () => {
   setInterval(renderWins, 5000);
 })();
 
-/* ── 提示按钮：点击切换显示说明（悬浮由 CSS hover 触发） ── */
+/* ── 提示气泡：JS 固定浮层（脱离滚动容器裁剪，自动防溢出视口） ── */
+const bubHost = (() => {
+  const h = document.createElement('div');
+  h.id = 'bubHost';
+  document.body.appendChild(h);
+  return h;
+})();
+let bubSeq = 1;
+function showBub(t) {
+  const src = t.querySelector('.bub');
+  if (!src || !src.textContent.trim()) return;
+  bubHost.innerHTML = '';
+  const c = src.cloneNode(true);
+  bubHost.appendChild(c);
+  const r = t.getBoundingClientRect();
+  const bw = c.offsetWidth, bh = c.offsetHeight;
+  let x = Math.round(r.left + r.width / 2 - bw / 2);
+  let y = Math.round(r.bottom + 9);
+  let up = false;
+  if (y + bh > innerHeight - 8) { y = Math.round(r.top - 9 - bh); up = true; }
+  if (x < 8) x = 8;
+  if (x + bw > innerWidth - 8) x = innerWidth - 8 - bw;
+  c.classList.toggle('up', up);
+  c.style.setProperty('--ar', Math.max(8, Math.min(92, Math.round((r.left + r.width / 2 - x) / bw * 1000) / 10)) + '%');
+  c.style.left = x + 'px';
+  c.style.top = y + 'px';
+  bubHost.classList.add('show');
+}
+function hideBub() { bubHost.classList.remove('show'); bubHost.innerHTML = ''; }
+function clearOpen() { [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open')); }
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest('.tip');
+  if (t && !t.classList.contains('open')) showBub(t);
+}, true);
+document.addEventListener('mouseout', e => {
+  const t = e.target.closest('.tip');
+  if (!t || t.classList.contains('open')) return;
+  const to = e.relatedTarget;
+  if (to && to.closest && (to.closest('.tip') || to.closest('#bubHost'))) return;
+  hideBub();
+}, true);
 document.addEventListener('click', e => {
   const t = e.target.closest('.tip');
-  if (!t) return;
-  e.stopPropagation();
-  const was = t.classList.contains('open');
-  [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
-  if (!was) t.classList.add('open');
+  if (t) {
+    e.stopPropagation();
+    const was = t.classList.contains('open');
+    [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
+    if (!was) { t.classList.add('open'); showBub(t); } else hideBub();
+    return;
+  }
+  if (!e.target.closest('#bubHost')) {
+    [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
+    hideBub();
+  }
 });
-document.addEventListener('click', e => {
-  if (!e.target.closest('.tip')) [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
-});
+[].forEach.call(document.querySelectorAll('.main,.out'), el => el.addEventListener('scroll', () => { clearOpen(); hideBub(); }));
+window.addEventListener('resize', () => { clearOpen(); hideBub(); });
 </script>
 </body>
 </html>
