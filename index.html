@@ -489,9 +489,7 @@ function renderTop() {
   $('navMeta').innerHTML = `显示器 <b>${mon.w}×${mon.h}</b><br>引擎 <b>${esc(window.__engineVer || '—')}</b><br>已开窗口 <b id="navWins">—</b>`;
 }
 function renderDevs() {
-  const conn = devId ? devs.filter(d => d.id === devId) : [];
-  const others = devs.filter(d => d.id !== devId && (devTab === 'wifi' ? d.via === 'wifi' : d.via === 'usb'));
-  const list = conn.concat(others);
+  const list = devs; // 已连接设备（有线+无线）全部共同显示，不受 USB/无线 tab 过滤
   $('devs').innerHTML = list.length ? list.map(d => {
     const cur = String(d.currentSize || '');
     const phy = String(d.physicalSize || '');
@@ -504,11 +502,9 @@ function renderDevs() {
       <div><div class="nm">${esc(d.name || d.model || d.id)}</div>
       <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div></div>
       <span class="sp"></span>
-      ${d.id === devId ? '<span class="tag ok">已连接 · ' + viaTxt + '</span>' : '<span class="tag">' + viaTxt + '</span>'}
+      <span class="tag ok">已连接 · ${viaTxt}</span>
       <span class="check"></span></div>`;
-  }).join('') : (devTab === 'wifi'
-    ? '<div class="empty">没扫到无线设备。用下方面板「扫描局域网」或手动输入连接。</div>'
-    : '<div class="empty">没扫到 USB 设备。插上数据线后点<span class="act">重新扫描</span>。</div>');
+  }).join('') : '<div class="empty">没有已连接设备。用上方「连接设置」连接设备。</div>';
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
@@ -739,7 +735,7 @@ async function refresh() {
   devs = r.devices || [];
   window.__engineVer = r.version || '未找到';
   $('topEngine').innerHTML = '<i></i><span>scrcpy ' + esc(r.version || '未找到') + '</span>';
-  if (!devs.find(d => d.id === devId)) devId = devs.length ? devs[0].id : null;
+  if (devId && !devs.find(d => d.id === devId)) devId = null; // 不自动选中，由用户点击设备卡片选择
   tier = 0;
   renderAll(); renderConn(); renderWins();
 }
@@ -842,7 +838,7 @@ $('btnWifiScan').onclick = discoverOnce;
 $('btnWifiGo').onclick = wifiGo;
 ['wifiIp', 'wifiPort', 'wifiCode'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') wifiGo(); }));
 $('btnGo').onclick = async () => {
-  const t = at(); if (!t || !t.run) return;
+  const t = at(); if (!t || !t.run) { toast('先在「连接设备」列表里点选一台设备', true); return; }
   $('btnGo').disabled = true; $('btnGo').textContent = '启动中…';
   try {
     const r = await t.run();
