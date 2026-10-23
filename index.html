@@ -196,13 +196,16 @@ button,select,input{font:inherit;color:inherit}
             <span class="tip">?<span class="bub">USB 即插即现；无线设备需首次配对，之后自动连接。找到设备后点一下选中，再往下选投屏方式与档位。</span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnScan">重新扫描</button>
-            <button class="iconbtn" id="btnWifi">无线连接</button>
+          </div>
+          <div class="seg" id="devTab" style="margin-bottom:9px">
+            <button class="on" data-t="usb">USB 连接</button>
+            <button data-t="wifi">无线连接</button>
           </div>
           <div class="rows" id="devs"></div>
           <div class="wifi" id="wifiPanel" hidden>
             <div class="wt">开启无线调试后点「扫描」，自动发现局域网设备，首次连接填配对码。<span class="tip inline">?<span class="bub">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</span></span></div>
             <div class="wr" style="margin-bottom:9px">
-              <button class="iconbtn" id="btnWifiScan">重新扫描</button>
+              <button class="iconbtn" id="btnWifiScan">扫描局域网</button>
               <span class="wm" id="wifiScanMsg" style="flex:1;margin-top:0"></span>
             </div>
             <div class="rows" id="wifiDevs"></div>
@@ -388,7 +391,7 @@ const api = {
 };
 
 const MON = { w: 1920, h: 1080 };
-let devs = [], devId = null, mode = 'mirror', tier = 0, mon = { w: 1920, h: 1080 }, wifiFound = [];
+let devs = [], devId = null, mode = 'mirror', tier = 0, mon = { w: 1920, h: 1080 }, wifiFound = [], devTab = 'usb';
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -475,19 +478,26 @@ function renderTop() {
   $('navMeta').innerHTML = `显示器 <b>${mon.w}×${mon.h}</b><br>引擎 <b>${esc(window.__engineVer || '—')}</b><br>已开窗口 <b id="navWins">—</b>`;
 }
 function renderDevs() {
-  $('devs').innerHTML = devs.length ? devs.map(d => {
+  const conn = devId ? devs.filter(d => d.id === devId) : [];
+  const others = devs.filter(d => d.id !== devId && (devTab === 'wifi' ? d.via === 'wifi' : d.via === 'usb'));
+  const list = conn.concat(others);
+  $('devs').innerHTML = list.length ? list.map(d => {
     const cur = String(d.currentSize || '');
     const phy = String(d.physicalSize || '');
     const sizeTxt = cur && phy && cur !== phy ? `当前 ${cur} · 物理 ${phy}` : (cur || phy || '?');
     const dpiTxt = (d.currentDpi && d.physicalDpi && d.currentDpi !== d.physicalDpi)
       ? `${d.currentDpi}dpi · 物理 ${d.physicalDpi}` : `${d.currentDpi || d.physicalDpi || '?'}dpi`;
+    const viaTxt = d.via === 'usb' ? '有线' : '无线';
     return `<div class="row ${d.id === devId ? 'on' : ''}" data-id="${esc(d.id)}">
-      <span class="ic">${d.via === 'usb' ? '' : ''}</span>
+      <span class="ic">${d.via === 'usb' ? '🔌' : '📶'}</span>
       <div><div class="nm">${esc(d.name || d.model || d.id)}</div>
       <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div></div>
-      <span class="sp"></span><span class="tag ${d.via === 'usb' ? 'ok' : ''}">${d.via === 'usb' ? '有线' : '无线'}</span>
+      <span class="sp"></span>
+      ${d.id === devId ? '<span class="tag ok">已连接 · ' + viaTxt + '</span>' : '<span class="tag">' + viaTxt + '</span>'}
       <span class="check"></span></div>`;
-  }).join('') : '<div class="empty">没扫到设备。<span class="act">重新扫描</span> 或点上方「无线连接」扫描局域网并首次配对。</div>';
+  }).join('') : (devTab === 'wifi'
+    ? '<div class="empty">没扫到无线设备。用下方面板「扫描局域网」或手动输入连接。</div>'
+    : '<div class="empty">没扫到 USB 设备。插上数据线后点<span class="act">重新扫描</span>。</div>');
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
@@ -763,13 +773,14 @@ async function wifiGo() {
   btn.disabled = false; btn.textContent = '连接';
 }
 
-$('btnWifi').onclick = async () => {
-  const p = $('wifiPanel');
-  p.hidden = !p.hidden;
-  if (p.hidden) return;
-  discoverOnce();
-  $('wifiIp').focus();
-};
+function switchDevTab(k) {
+  devTab = k;
+  [].forEach.call($('devTab').querySelectorAll('button'), b => b.classList.toggle('on', b.dataset.t === k));
+  $('wifiPanel').hidden = k !== 'wifi';
+  if (k === 'wifi') { discoverOnce(); $('wifiIp').focus(); }
+  renderDevs();
+}
+[].forEach.call($('devTab').querySelectorAll('button'), b => b.onclick = () => switchDevTab(b.dataset.t));
 $('btnWifiScan').onclick = discoverOnce;
 $('btnWifiGo').onclick = wifiGo;
 ['wifiIp', 'wifiPort', 'wifiCode'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') wifiGo(); }));
