@@ -555,7 +555,7 @@ public class MainForm : Form
                 bool pairing = l.IndexOf("pairing", StringComparison.OrdinalIgnoreCase) >= 0;
                 WifiDev dev;
                 if (!byIp.TryGetValue(ip, out dev)) { dev = new WifiDev { ip = ip }; byIp[ip] = dev; }
-                if (dev.name.Length == 0) dev.name = name;
+                if (string.IsNullOrEmpty(dev.name)) dev.name = name;
                 if (pairing) { if (dev.pairAddr == null) dev.pairAddr = addr; }
                 else if (dev.connAddr == null) dev.connAddr = addr;
                 mdnsEmpty = false;
