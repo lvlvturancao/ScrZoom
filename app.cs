@@ -672,7 +672,9 @@ public class MainForm : Form
         var presets = new List<object> {
             new Dictionary<string, object>{ { "name", "720P 轻量" }, { "size", "1280x720/240" } },
             new Dictionary<string, object>{ { "name", "1080P 办公" }, { "size", "1920x1080/320" } },
-            new Dictionary<string, object>{ { "name", "2K 高清" }, { "size", "2560x1440/480" } }
+            new Dictionary<string, object>{ { "name", "2K 高清" }, { "size", "2560x1440/480" } },
+            new Dictionary<string, object>{ { "name", "720P 竖屏" }, { "size", "720x1280/240" } },
+            new Dictionary<string, object>{ { "name", "1080P 竖屏" }, { "size", "1080x1920/320" } }
         };
         var custom = ReadJson(TemplatesFile) as System.Collections.IEnumerable;
         var cl = new List<object>();

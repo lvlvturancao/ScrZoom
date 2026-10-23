@@ -602,7 +602,16 @@ async function renderVdTemplates() {
   const r = await api.vdTemplates();
   const all = [].concat((r && r.presets) || [], (r && r.custom) || []);
   if (!all.length) return;
-  $('fVd').innerHTML = all.map(t => `<option value="${esc(t.size)}">${esc(t.name)} · ${esc(t.size)}</option>`).join('');
+  const grp = (items, label) => {
+    const opts = items.map(t => `<option value="${esc(t.size)}">${esc(t.name)} · ${esc(t.size)}</option>`).join('');
+    return opts ? '<optgroup label="' + label + '">' + opts + '</optgroup>' : '';
+  };
+  const land = [], port = [];
+  all.forEach(t => {
+    const p = String(t.size || '').split('/')[0].split('x').map(Number);
+    (p.length === 2 && p[1] > p[0] ? port : land).push(t);
+  });
+  $('fVd').innerHTML = grp(land, '横屏') + grp(port, '竖屏');
 }
 async function renderVdInfo() {
   const d = cur();
