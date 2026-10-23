@@ -2,7 +2,7 @@
 
 > 把安卓设备的小屏放大上桌：无线投屏 · 虚拟分辨率放大 · 一机多屏
 
-面向安卓设备（手机、平板、掌机等）的 Windows 投屏工作台。基于 [scrcpy](https://github.com/Genymobile/scrcpy) + ADB，把设备侧渲染放大、多虚拟屏实例、参数自动还原、局域网设备发现等能力封装成一套开箱即用的 GUI 工具。
+面向安卓设备（手机、平板、掌机等）的 Windows 投屏工具。基于 [scrcpy](https://github.com/Genymobile/scrcpy) + ADB，把设备侧渲染放大、多虚拟屏实例、参数自动还原、局域网设备发现等能力封装成一套开箱即用的 GUI 工具。
 
 ## 功能特性
 
@@ -21,13 +21,13 @@
 
 1. 从 [scrcpy 官方](https://github.com/Genymobile/scrcpy/releases) 下载 **Windows 版 scrcpy**，解压后将整个目录重命名为 `engine`，放到本程序旁边（或程序上一级目录下，工具会自动发现）
 2. 安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Win10/11 一般自带）
-3. 启动 `投屏工作台.exe`
+3. 启动 `水月清影.exe`
 
 目录结构示意：
 
 ```
 你的目录/
-├── 投屏工作台.exe
+├── 水月清影.exe
 ├── index.html
 └── engine/            # scrcpy 解压目录（含 scrcpy.exe / adb.exe）
 ```
@@ -41,7 +41,7 @@
 .\build.ps1
 ```
 
-编译产物为 `投屏工作台.exe`，前端为纯 HTML（`index.html`），无需打包资源。
+编译产物为 `水月清影.exe`，前端为纯 HTML（`index.html`），无需打包资源。
 
 ## 工作原理
 
