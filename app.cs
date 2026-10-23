@@ -164,6 +164,7 @@ public class MainForm : Form
             case "wifi-discover": return await WifiDiscover();
             case "wifi-disconnect": return await WifiDisconnect(p);
             case "wifi-connect": return await WifiConnect(p);
+            case "wifi-restart-adb": return await RestartAdb();
         }
         return Err("未知操作 " + action);
     }
@@ -529,29 +530,46 @@ public class MainForm : Form
             if (!byIp.TryGetValue(ip, out dev)) { dev = new WifiDev { ip = ip }; byIp[ip] = dev; }
             dev.connAddr = c; dev.connected = true;
         }
-        var r = await Run(adbExe, new[] { "mdns", "services" }, 7000);
-        foreach (var line in r.text.Split('\n'))
+        // adb 的 mDNS 查询不稳定：一次查询经常漏设备，多轮查询合并提高发现率；
+        // 全部为空时再补一轮（mDNS 后端可能短暂失聪，这里不重启 adb server，避免打断正在投屏的会话）
+        bool mdnsEmpty = true;
+        Func<Task> parseMdns = async () =>
         {
-            var l = line.Trim();
-            if (l.Length == 0 || l.StartsWith("List of")) continue;
-            var tokens = l.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            string addr = null, name = "";
-            foreach (var x in tokens)
+            var r = await Run(adbExe, new[] { "mdns", "services" }, 7000);
+            foreach (var line in r.text.Split('\n'))
             {
-                var s = x.Split(':');
-                if (s.Length == 2 && s[1].Length > 0 && s[1].All(char.IsDigit)) { addr = x; break; }
+                var l = line.Trim();
+                if (l.Length == 0 || l.StartsWith("List of")) continue;
+                var tokens = l.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                string addr = null, name = "";
+                foreach (var x in tokens)
+                {
+                    var s = x.Split(':');
+                    if (s.Length == 2 && s[1].Length > 0 && s[1].All(char.IsDigit)) { addr = x; break; }
+                }
+                if (addr == null) continue;
+                name = string.Join(" ", tokens.Where(t => t != addr)
+                    .Select(t => t.Replace("._adb-tls-connect._tcp", "").Replace("._adb-tls-pairing._tcp", ""))
+                    .Where(t => t.Length > 0));
+                var ip = addr.Split(':')[0];
+                bool pairing = l.IndexOf("pairing", StringComparison.OrdinalIgnoreCase) >= 0;
+                WifiDev dev;
+                if (!byIp.TryGetValue(ip, out dev)) { dev = new WifiDev { ip = ip }; byIp[ip] = dev; }
+                if (dev.name.Length == 0) dev.name = name;
+                if (pairing) { if (dev.pairAddr == null) dev.pairAddr = addr; }
+                else if (dev.connAddr == null) dev.connAddr = addr;
+                mdnsEmpty = false;
             }
-            if (addr == null) continue;
-            name = string.Join(" ", tokens.Where(t => t != addr)
-                .Select(t => t.Replace("._adb-tls-connect._tcp", "").Replace("._adb-tls-pairing._tcp", ""))
-                .Where(t => t.Length > 0));
-            var ip = addr.Split(':')[0];
-            bool pairing = l.IndexOf("pairing", StringComparison.OrdinalIgnoreCase) >= 0;
-            WifiDev dev;
-            if (!byIp.TryGetValue(ip, out dev)) { dev = new WifiDev { ip = ip }; byIp[ip] = dev; }
-            if (dev.name.Length == 0) dev.name = name;
-            if (pairing) { if (dev.pairAddr == null) dev.pairAddr = addr; }
-            else if (dev.connAddr == null) dev.connAddr = addr;
+        };
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            await parseMdns();
+            if (attempt < 3) await Task.Delay(700);
+        }
+        if (mdnsEmpty)
+        {
+            await Task.Delay(1200);
+            await parseMdns();
         }
         foreach (var dev in byIp.Values)
             found.Add(new Dictionary<string, object> {
@@ -561,6 +579,16 @@ public class MainForm : Form
                 { "name", dev.name } });
         Log("wifi-discover " + found.Count + " 台");
         return found;
+    }
+
+    // mDNS 后端偶尔会失聪导致扫不到设备：手动重启 adb 服务兜底（会断开当前连接）
+    async Task<object> RestartAdb()
+    {
+        if (adbExe == null) return Err("没找到 adb");
+        await Run(adbExe, new[] { "kill-server" }, 5000);
+        await Task.Delay(800);
+        var s = await Run(adbExe, new[] { "start-server" }, 8000);
+        return new Dictionary<string, object> { { "ok", s.ok }, { "text", s.ok ? "ok" : s.text } };
     }
 
     async Task<object> WifiDisconnect(Dictionary<string, object> p)

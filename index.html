@@ -393,6 +393,7 @@ const api = {
   toWireless: (id) => call('to-wireless', { id }),
   toWired: (id) => call('to-wired', { id }),
   discover: () => call('wifi-discover'),
+  restartAdb: () => call('wifi-restart-adb'),
   disconnect: (addr) => call('wifi-disconnect', { addr: addr || '' }),
   wifiConnect: (o) => call('wifi-connect', { ip: o.ip || '', port: o.port || '', code: o.code || '' }),
   recentApps: () => call('recent-apps'),
@@ -755,7 +756,16 @@ async function discoverOnce() {
     wifiFound = Array.isArray(found) ? found : [];
     if (!wifiFound.length) {
       msg.textContent = '没扫到无线调试广播。确认手机上那个开关是开着的、屏幕没锁，或用手动输入。';
+      msg.innerHTML = '没扫到无线调试广播。确认手机上开关开着、屏幕没锁，或用手动输入。<button class="b2" id="btnAdbRestart" style="margin-left:8px;padding:2px 9px">重启 adb 服务再扫</button>';
       $('wifiDevs').innerHTML = '';
+      const br = $('btnAdbRestart');
+      if (br) br.onclick = async () => {
+        br.disabled = true;
+        const r = await api.restartAdb();
+        toast((r && r.ok ? 'adb 服务已重启，正在重新扫描（已断开设备需重连）' : ('重启失败：' + ((r && r.text) || ''))), !(r && r.ok));
+        await discoverOnce();
+        br.disabled = false;
+      };
       return;
     }
     msg.textContent = '发现 ' + wifiFound.length + ' 台设备，点右侧按钮直连或断开。';
