@@ -36,7 +36,7 @@ public class MainForm : Form
 
     public MainForm()
     {
-        Text = "投屏工作台";
+        Text = "水月清影 ScreenZoom";
         Width = 1180; Height = 780;
         MinimumSize = new Size(1020, 640);
         StartPosition = FormStartPosition.CenterScreen;
@@ -819,7 +819,7 @@ public class MainForm : Form
     {
         return new Dictionary<string, object> {
             { "ok", true },
-            { "app", "投屏工作台" },
+            { "app", "水月清影" },
             { "engine", engineDir ?? "" },
             { "license", "GPL-3.0" },
             { "dir", AppDir() }
@@ -833,7 +833,7 @@ public class MainForm : Form
         try
         {
             string desk = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            string dest = Path.Combine(desk, "投屏工作台-打赏二维码.png");
+            string dest = Path.Combine(desk, "水月清影-打赏二维码.png");
             File.Copy(src, dest, true);
             return new Dictionary<string, object> { { "ok", true }, { "path", dest } };
         }
