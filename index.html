@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>投屏工作台</title>
+<style>
+:root{
+  --bg:#f6f7f8; --surface:#fff; --sunken:#f0f2f4; --line:#e4e7ea; --line-strong:#d3d8dd;
+  --text:#191c1f; --text-2:#5c6672; --text-3:#8b95a1;
+  --accent:#0b6b5f; --accent-soft:#e9f3f1;
+  --warn:#a15c07; --warn-soft:#fbf3e6; --bad:#a83232; --bad-soft:#fbeceb;
+  --mono:'SF Mono','Cascadia Code',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg);overflow:hidden}
+button,select,input{font:inherit;color:inherit}
+
+.app{display:flex;flex-direction:column;height:100vh}
+.top{height:46px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 14px;gap:12px;flex-shrink:0}
+.top .app-name{font-weight:600}
+.top .app-name .mark{display:inline-block;width:15px;height:15px;border-radius:4px;background:var(--accent);vertical-align:-2px;margin-right:7px;position:relative}
+.top .app-name .mark::after{content:'';position:absolute;inset:4px 4px 4px 7px;background:#fff;border-radius:1px}
+.top .div{width:1px;height:18px;background:var(--line)}
+.top .sp{flex:1}
+.link{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-2)}
+.link i{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.link.off i{background:var(--line-strong)}
+.iconbtn{background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 9px;font-size:11.5px;color:var(--text-2);cursor:pointer}
+.iconbtn:hover{background:var(--sunken);color:var(--text)}
+
+.body{flex:1;display:flex;min-height:0}
+.nav{width:168px;background:var(--surface);border-right:1px solid var(--line);padding:10px 8px;flex-shrink:0;display:flex;flex-direction:column}
+.nav a{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:6px;color:var(--text-2);font-size:12.5px;cursor:pointer;margin-bottom:1px}
+.nav a:hover{background:var(--sunken);color:var(--text)}
+.nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nav .grp{font-size:10.5px;color:var(--text-3);padding:12px 9px 5px}
+.nav .meta{margin-top:auto;padding:9px;border-radius:6px;background:var(--sunken);font-size:11px;color:var(--text-2);line-height:1.8}
+.nav .meta b{color:var(--text);font-variant-numeric:tabular-nums}
+
+.main{flex:1;padding:18px 22px;overflow:auto;min-width:0}
+.sec{margin-bottom:22px}
+.h{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
+.h b{font-size:13px;font-weight:650}
+.h span{font-size:11.5px;color:var(--text-3)}
+
+.rows{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}
+.row{display:flex;align-items:center;gap:11px;padding:11px 13px;cursor:pointer;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--sunken)}
+.row.on{background:var(--accent-soft)}
+.row .ic{width:28px;height:28px;border-radius:6px;border:1px solid var(--line);background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.row .nm{font-size:12.5px;font-weight:600}
+.row .mt{font-size:11px;color:var(--text-3);margin-top:1px;font-variant-numeric:tabular-nums}
+.row .sp{flex:1}
+.tag{font-size:10.5px;padding:2px 7px;border-radius:20px;background:var(--sunken);color:var(--text-2);border:1px solid var(--line)}
+.tag.ok{background:var(--accent-soft);color:var(--accent);border-color:#cfe6e1}
+.tag.no{color:var(--text-3)}
+.check{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--line-strong);flex-shrink:0;position:relative}
+.row.on .check{border-color:var(--accent);background:var(--accent)}
+.row.on .check::after{content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 1.6px 1.6px 0;transform:rotate(42deg)}
+
+.seg{display:inline-flex;background:var(--sunken);border:1px solid var(--line);border-radius:7px;padding:2px;gap:2px}
+.seg button{border:0;background:transparent;font-size:12.5px;color:var(--text-2);padding:5px 14px;border-radius:5px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.07)}
+.seg button .dot{width:5px;height:5px;border-radius:50%;background:var(--line-strong)}
+.seg button.on .dot{background:var(--accent)}
+.desc{font-size:11.5px;color:var(--text-3);margin-top:8px;line-height:1.6}
+
+.tier .rd{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--line-strong);flex-shrink:0;position:relative}
+.tier.on .rd{border-color:var(--accent)}
+.tier.on .rd::after{content:'';position:absolute;inset:3px;border-radius:50%;background:var(--accent)}
+.tier .size{font-family:var(--mono);font-size:11px;color:var(--text-2);margin-right:9px;font-variant-numeric:tabular-nums}
+.pill{font-size:10.5px;padding:2px 8px;border-radius:5px;background:var(--sunken);color:var(--text-2);border:1px solid var(--line)}
+.pill.hi{background:var(--warn-soft);color:var(--warn);border-color:#f0dfc4}
+.pill.no{background:var(--bad-soft);color:var(--bad);border-color:#f2d5d3}
+.tier.dim{opacity:.45}
+
+.disc{border-top:1px solid var(--line);padding-top:11px}
+.disc>summary{list-style:none;cursor:pointer;font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:7px}
+.disc>summary::-webkit-details-marker{display:none}
+.disc>summary .chev{font-size:9px;color:var(--text-3);transition:transform .18s}
+.disc[open]>summary .chev{transform:rotate(90deg)}
+.fields{display:flex;flex-wrap:wrap;gap:18px;padding:12px 0 2px 16px}
+.field label{display:block;font-size:11px;color:var(--text-3);margin-bottom:4px}
+.field select{background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;padding:5px 8px;font-size:12px;min-width:132px}
+
+.out{width:306px;border-left:1px solid var(--line);background:var(--surface);padding:16px;flex-shrink:0;overflow:auto}
+.out .h2{font-size:11px;color:var(--text-3);margin-bottom:12px}
+.mon{position:relative;margin:0 14px 22px}
+.scr{width:100%;aspect-ratio:16/9;border:1.5px solid var(--line-strong);border-radius:5px;background:var(--sunken);display:flex;align-items:center;justify-content:center;position:relative}
+.shot{background:var(--accent-soft);border:1.5px solid var(--accent);border-radius:2px;display:flex;align-items:center;justify-content:center;min-width:4px;min-height:4px;transition:width .32s cubic-bezier(.2,.7,.3,1),height .32s cubic-bezier(.2,.7,.3,1)}
+.shot b{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:600;white-space:nowrap}
+.shot.dead{background:repeating-linear-gradient(45deg,#faf1f0,#faf1f0 4px,#f5e6e5 4px,#f5e6e5 8px);border-color:var(--bad)}
+.shot.dead b{color:var(--bad)}
+.neck{width:40px;height:12px;background:var(--line);margin:0 auto;border-radius:0 0 2px 2px}
+.base{width:74px;height:4px;background:var(--line-strong);margin:0 auto;border-radius:2px}
+.reads{display:flex;flex-direction:column;gap:11px}
+.rw{display:flex;align-items:baseline;justify-content:space-between}
+.rw .k{font-size:11.5px;color:var(--text-2)}
+.rw .v{font-family:var(--mono);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.rw .v.ok{color:var(--accent)}.rw .v.hi{color:var(--warn)}.rw .v.no{color:var(--bad)}
+.meter{height:3px;background:var(--sunken);border-radius:2px;overflow:hidden;margin-top:5px}
+.meter i{display:block;height:100%;background:var(--accent);transition:width .32s cubic-bezier(.2,.7,.3,1)}
+.meter.hi i{background:var(--warn)}.meter.no i{background:var(--bad)}
+.call{margin-top:16px;padding:10px 11px 10px 12px;background:var(--sunken);border-radius:6px;border-left:2.5px solid var(--line-strong);font-size:11.5px;color:var(--text-2);line-height:1.7}
+.call.warn{border-left-color:var(--warn);background:var(--warn-soft);color:#6d4413}
+.call.bad{border-left-color:var(--bad);background:var(--bad-soft);color:#7a2b28}
+.call b{color:var(--text);font-weight:600}
+
+.foot{border-top:1px solid var(--line);background:var(--surface);padding:11px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.cmd{font-family:var(--mono);font-size:11px;color:var(--text-2);background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:6px 10px;max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmd em{color:var(--accent);font-style:normal}
+.foot .sp{flex:1}
+.b2{background:var(--surface);border:1px solid var(--line-strong);border-radius:7px;padding:7px 12px;font-size:12.5px;color:var(--text-2);cursor:pointer}
+.b2:hover{background:var(--sunken);color:var(--text)}
+.go{background:var(--text);color:#fff;border:0;border-radius:7px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer}
+.go:hover{background:#000}
+.go:disabled{background:var(--line-strong);cursor:not-allowed}
+
+.searchrow{display:flex;gap:8px;margin-bottom:10px}
+.searchrow input{flex:1;background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;padding:8px 10px;font-size:12.5px}
+.searchrow input:focus{outline:none;border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:20px;padding:5px 12px;font-size:12px;cursor:pointer;color:var(--text-2)}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.empty{font-size:12px;color:var(--text-3);padding:14px 2px;line-height:1.8}
+.wifi{margin-top:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:12px 13px}
+.wifi .wt{font-size:11.5px;color:var(--text-3);line-height:1.85;margin-bottom:10px}
+.wifi .wr{display:flex;gap:8px;align-items:center}
+.wifi input{flex:1;min-width:0;background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;padding:6px 9px;font-size:12px;color:var(--text);font-family:inherit}
+.wifi input:focus{outline:none;border-color:var(--accent)}
+.wifi .wm{margin-top:10px;font-size:11.5px;color:var(--text-2);line-height:1.85;white-space:pre-line}
+.wifi .wm:empty{display:none}
+.wifi .wm.bad{color:#b3261e}
+.toast{position:fixed;bottom:64px;left:50%;transform:translateX(-50%) translateY(12px);background:var(--text);color:#fff;font-size:12px;padding:9px 15px;border-radius:7px;opacity:0;transition:.22s;pointer-events:none;box-shadow:0 8px 24px -10px rgba(0,0,0,.5)}
+.toast.show{opacity:1;transform:translateX(-50%)}
+.toast.bad{background:var(--bad)}
+.page{display:none}.page.on{display:block}
+.side-only{display:none}
+@media(min-width:0){.side-only{display:block}}
+.modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center}
+.modal[hidden]{display:none}
+.mask{position:absolute;inset:0;background:rgba(15,20,25,.45)}
+.box{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px;width:340px;box-shadow:0 18px 50px -12px rgba(0,0,0,.35);text-align:center}
+.ab-title{font-size:15px;font-weight:700}
+.ab-meta{font-size:11px;color:var(--text-3);margin-top:5px;line-height:1.7;word-break:break-all}
+.ab-sep{height:1px;background:var(--line);margin:14px 0}
+.ab-don b{font-size:13px}
+.ab-don p{font-size:11.5px;color:var(--text-2);margin:7px 0;line-height:1.7}
+.ab-don img{width:200px;height:200px;border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff;object-fit:contain}
+.ab-lic{font-size:10.5px;color:var(--text-3);margin:12px 0}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="app-name"><span class="mark"></span>投屏工作台</div>
+    <div class="div"></div>
+    <div class="link" id="topLink"><i></i><span>未连接设备</span></div>
+    <span class="sp"></span>
+    <button class="iconbtn" id="btnAbout">关于</button>
+    <div class="link" id="topEngine"><i></i><span>引擎检测中…</span></div>
+  </div>
+
+  <div class="body">
+    <div class="nav">
+      <a class="on" data-page="cast">▣ 投屏</a>
+      <a data-page="wins">▤ 应用窗口</a>
+      <a data-page="conn">◈ 设备与还原</a>
+      <div class="grp">本机</div>
+      <div class="meta" id="navMeta">显示器 —<br>引擎 —</div>
+    </div>
+
+    <div class="main">
+      <!-- 投屏 -->
+      <div class="page on" id="pg-cast">
+        <div class="sec">
+          <div class="h" style="align-items:center"><b>设备</b><span>USB 即插即现；无线设备需首次配对，之后自动连接</span>
+            <span style="flex:1"></span>
+            <button class="iconbtn" id="btnScan">重新扫描</button>
+            <button class="iconbtn" id="btnWifi">无线连接</button>
+          </div>
+          <div class="rows" id="devs"></div>
+          <div class="wifi" id="wifiPanel" hidden>
+            <div class="wt">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</div>
+            <div class="wr" style="margin-bottom:9px">
+              <button class="iconbtn" id="btnWifiScan">重新扫描</button>
+              <span class="wm" id="wifiScanMsg" style="flex:1;margin-top:0"></span>
+            </div>
+            <div class="rows" id="wifiDevs"></div>
+            <div class="wt" style="margin-top:10px;margin-bottom:0">扫描不到？确认无线调试开着、屏幕没锁。或用手动输入：</div>
+            <div class="wr">
+              <input id="wifiIp" placeholder="IP，如 192.168.3.12">
+              <input id="wifiPort" placeholder="端口" maxlength="6" style="max-width:104px">
+              <input id="wifiCode" placeholder="配对码，首次才填" maxlength="8" style="max-width:168px">
+              <button class="iconbtn" id="btnWifiGo">连接</button>
+            </div>
+            <div class="wm" id="wifiMsg"></div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>投屏方式</b></div>
+          <div class="seg" id="seg"></div>
+          <div class="desc" id="segDesc"></div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>画面档位</b><span>右侧按真实分辨率计算</span></div>
+          <div class="rows" id="tiers"></div>
+        </div>
+        <details class="disc">
+          <summary><span class="chev">▶</span>更多参数</summary>
+          <div class="fields">
+            <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
+            <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
+          </div>
+        </details>
+      </div>
+
+      <!-- 应用窗口（虚拟屏电脑模式） -->
+      <div class="page" id="pg-wins">
+        <div class="sec">
+          <div class="h"><b>虚拟屏电脑模式</b><span>PC键鼠操作独立桌面；掌机按键不控制虚拟屏画面</span>
+            <span style="flex:1"></span>
+            <button class="iconbtn" id="btnVdClean">清理残留虚拟屏</button>
+          </div>
+          <div class="wm" id="vdInfo"></div>
+          <div class="fields" style="padding-left:0">
+            <div class="field"><label>虚拟屏模板</label><select id="fVd"></select></div>
+            <div class="field"><label>码率</label><select id="fVdBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
+          </div>
+          <div class="wr" style="gap:8px;margin-top:4px;margin-bottom:2px">
+            <input id="tmplName" placeholder="新模板名" style="max-width:120px">
+            <input id="tmplSize" placeholder="如 1920x1080/320" style="max-width:160px">
+            <button class="b2" id="btnTmplSave">存为模板</button>
+            <button class="b2" id="btnTmplDel">删当前模板</button>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>设备应用</b><span>点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块</span>
+            <span style="flex:1"></span>
+            <button class="iconbtn" id="btnAppsRefresh">刷新列表</button>
+          </div>
+          <div class="searchrow">
+            <input id="appFilter" placeholder="搜应用包名，如 retroarch / ppsspp / dolphin">
+          </div>
+          <div class="rows" id="appsBox"></div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>手动方式</b><span>扫不到或想开空白屏时兜底</span></div>
+          <div class="searchrow">
+            <input id="appName" placeholder="输应用名，几个字就行（也可直接输包名）">
+            <button class="b2" id="btnBlank">开空白屏</button>
+          </div>
+          <div class="chips" id="recent"></div>
+          <div class="desc" id="winDesc"></div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>当前窗口</b></div>
+          <div class="rows" id="winList"></div>
+        </div>
+      </div>
+
+      <!-- 设备与还原 -->
+      <div class="page" id="pg-conn">
+        <div class="sec">
+          <div class="h"><b>无线连接</b><span>首次需插线执行一次，之后可拔线</span></div>
+          <div class="rows" id="connBox"></div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>分辨率还原</b><span>改过画面档位但没自动还原时用这里</span></div>
+          <div class="rows" id="restoreBox"></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="out" id="outPanel">
+      <div class="h2" id="monLabel">输出预览</div>
+      <div class="mon">
+        <div class="scr"><div class="shot" id="shot" style="width:25%;height:100%"><b id="shotT">—</b></div></div>
+        <div class="neck"></div><div class="base"></div>
+      </div>
+      <div class="reads">
+        <div class="rw"><span class="k">显示尺寸</span><span class="v ok" id="vSize">—</span></div>
+        <div>
+          <div class="rw"><span class="k">占显示器高度</span><span class="v" id="vH">—</span></div>
+          <div class="meter"><i id="mH" style="width:0"></i></div>
+        </div>
+        <div>
+          <div class="rw"><span class="k">像素量 / 设备原始</span><span class="v" id="vPx">—</span></div>
+          <div class="meter hi"><i id="mPx" style="width:0"></i></div>
+        </div>
+        <div class="rw"><span class="k">设备负担</span><span class="v" id="vCost">—</span></div>
+      </div>
+      <div class="call" id="call"></div>
+    </aside>
+  </div>
+
+  <div class="foot">
+    <div class="cmd" id="cmd">$ —</div>
+    <span class="sp"></span>
+    <button class="b2" id="btnRestore">还原设备分辨率</button>
+    <button class="go" id="btnGo">开始投屏</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<div class="modal" id="aboutModal" hidden>
+  <div class="mask"></div>
+  <div class="box">
+    <div class="ab-title">投屏工作台</div>
+    <div class="ab-meta" id="aboutMeta">—</div>
+    <div class="ab-sep"></div>
+    <div class="ab-don">
+      <b>支持作者</b>
+      <p>开发不易，如果这个软件对你有帮助，可以随手支持一下，codex的额度真的不够用啦，哭哭~</p>
+      <img src="alipay_reward_qr.png" alt="支付宝打赏二维码">
+      <p>打赏完全自愿，不影响任何功能使用。</p>
+      <button class="b2" id="btnSaveQr">保存二维码到桌面</button>
+    </div>
+    <div class="ab-lic">GPL-3.0 开源协议 · 源码见 GitHub</div>
+    <button class="go" id="btnAboutClose">关闭</button>
+  </div>
+</div>
+
+<script>
+/* ── 界面脚本报错回传给本机程序，写进 debug.log ── */
+function __report(m, l) { try { window.chrome.webview.postMessage({ id: 0, action: '__jserror', payload: { msg: String(m), line: String(l == null ? '-' : l) } }); } catch (e) { } }
+window.onerror = (m, s, l) => { __report(m, l); };
+window.addEventListener('unhandledrejection', ev => { const r = ev.reason; __report('promise: ' + ((r && r.message) || r), (r && r.lineNumber) || '-'); });
+__report('页面脚本已启动 webview=' + !!(window.chrome && window.chrome.webview), 0);
+
+/* ── 与本机程序的通信桥 ── */
+let __seq = 0; const __pend = {};
+function call(action, payload) {
+  return new Promise((resolve, reject) => {
+    const id = ++__seq;
+    __pend[id] = resolve;
+    window.chrome.webview.postMessage({ id, action, payload: payload || {} });
+    setTimeout(() => { if (__pend[id]) { delete __pend[id]; reject(new Error('本机程序无响应')); } }, 40000);
+  });
+}
+window.__cb = (id, result) => { const f = __pend[id]; if (f) { delete __pend[id]; f(result); } };
+const api = {
+  scan: () => call('scan'),
+  monitor: () => call('monitor'),
+  state: () => call('state'),
+  launchMirror: (o) => call('launch-mirror', { id: o.id, fullscreen: o.fullscreen ? '1' : '0', bitrate: o.bitrate, fps: o.fps }),
+  launchScaled: (o) => call('launch-scaled', { id: o.id, kind: o.kind, factor: String(o.factor || ''), monW: String(o.monW), monH: String(o.monH), bitrate: o.bitrate, fps: o.fps }),
+  launchWindow: (o) => call('launch-window', { id: o.id, app: o.app || '', size: o.size, bitrate: o.bitrate }),
+  windows: () => call('windows'),
+  closeWindows: () => call('close-windows'),
+  vdList: (id) => call('vd-list', { id }),
+  vdCleanup: (id) => call('vd-cleanup', { id }),
+  vdTemplates: () => call('vd-templates'),
+  vdTemplateSave: (o) => call('vd-template-save', o),
+  vdTemplateDelete: (name) => call('vd-template-delete', { name }),
+  appsList: (id) => call('apps-list', { id }),
+  appsLaunch: (o) => call('apps-launch', o),
+  restore: (id) => call('restore', { id }),
+  toWireless: (id) => call('to-wireless', { id }),
+  toWired: (id) => call('to-wired', { id }),
+  discover: () => call('wifi-discover'),
+  disconnect: (addr) => call('wifi-disconnect', { addr: addr || '' }),
+  wifiConnect: (o) => call('wifi-connect', { ip: o.ip || '', port: o.port || '', code: o.code || '' }),
+  recentApps: () => call('recent-apps'),
+  about: () => call('about'),
+  saveRewardQr: () => call('save-reward-qr')
+};
+
+const MON = { w: 1920, h: 1080 };
+let devs = [], devId = null, mode = 'mirror', tier = 0, mon = { w: 1920, h: 1080 }, wifiFound = [];
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function toast(msg, bad) {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad ? ' bad' : '');
+  setTimeout(() => { t.className = 'toast'; }, 2600);
+}
+function cur() { return devs.find(d => d.id === devId); }
+function nums(d) {
+  const [pw, ph] = String(d.physicalSize || '0x0').split('x').map(Number);
+  const [cw, ch] = String(d.currentSize || d.physicalSize || '0x0').split('x').map(Number);
+  const dpi = +d.physicalDpi || 0, cdpi = +d.currentDpi || dpi;
+  return { pw, ph, cw: cw || pw, ch: ch || ph, dpi, cdpi };
+}
+
+// 档位表：按设备真实分辨率 + 真实显示器算
+function tiersFor(d) {
+  if (!d) return [];
+  const { pw, ph, cw, ch, dpi } = nums(d);
+  if (!pw) return [];
+  const isPad = /rotate|anbernic|rg /i.test((d.name || '') + (d.model || ''));
+  const showW = (w, h) => [Math.round(Math.min(mon.w, mon.h * w / h)), mon.h];
+  const out = [];
+  if (mode === 'mirror') {
+    // 镜像只缩不放：屏幕装不下才缩，小画面保持原尺寸。scrcpy 不会把低分辨率放大
+    const k = Math.min(1, mon.w / cw, mon.h / ch);
+    const s = [Math.round(cw * k), Math.round(ch * k)];
+    out.push({ nm: '原始分辨率', ds: `按设备当前 ${cw}×${ch} 点对点输出，不缩放不放大`, size: s, px: 1, cost: '无增加', cls: '',
+      tip: k < 1
+        ? `设备当前 ${cw}×${ch}，比显示器高，窗口会等比缩到 ${s[0]}×${s[1]}。像素来自设备，不插值。要更大得用「放大画面」。`
+        : `设备当前 ${cw}×${ch}，按原尺寸开窗，一个像素对一个像素，不放大。想填满屏幕用「放大画面」。`,
+      run: () => api.launchMirror({ id: d.id, fullscreen: false, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+      cmd: '仅镜像（默认参数）' });
+    out.push({ nm: '全屏显示', ds: '隐藏窗口边框铺满屏幕，按 Alt+F 随时切换', size: s, px: 1, cost: '无增加', cls: '',
+      tip: '全屏只是去掉边框，画面像素不变，<b>不会更清楚</b>。要更清楚用「放大画面」。',
+      run: () => api.launchMirror({ id: d.id, fullscreen: true, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+      cmd: '--fullscreen' });
+    return out;
+  }
+  if (mode === 'scale') {
+    const mk = (nm, k, extra) => {
+      const w = Math.round(pw * k), h = Math.round(ph * k);
+      const s = showW(w, h);
+      return Object.assign({ nm, ds: '像素量 ' + (k * k).toFixed(2) + ' 倍', size: s, px: k * k,
+        cost: k <= 1 ? '无增加' : k < 1.8 ? '中等负载' : '高负载', cls: k <= 1 ? '' : k < 1.8 ? 'hi' : 'no',
+        run: () => api.launchScaled({ id: d.id, kind: 'factor', factor: k, monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+        cmd: 'wm size ' + w + 'x' + h + ' · wm density ' + Math.round(dpi * k) }, extra || {});
+    };
+    out.push(mk('1.0× 重绘', 1));
+    out.push(mk('1.5× 重绘', 1.5));
+    out.push(mk('2.0× 重绘', 2));
+    const kFit = Math.min(mon.w / pw, mon.h / ph);
+    out.push({ nm: '等比最大化', ds: '保持设备比例放大到显示器边界，不变形', size: showW(Math.round(pw * kFit), Math.round(ph * kFit)),
+      px: kFit * kFit, cost: kFit <= 1 ? '无增加' : '中等负载', cls: kFit <= 1 ? '' : 'hi',
+      tip: `取宽、高两个方向较小的比值 ${kFit.toFixed(2)}，保证不变形又能撑到屏幕边界。换更大显示器会自动提高。`,
+      run: () => api.launchScaled({ id: d.id, kind: 'fit', monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+      cmd: 'wm size ' + Math.round(pw * kFit) + 'x' + Math.round(ph * kFit) });
+    const fillPx = (mon.w * mon.h) / (pw * ph);
+    out.push({ nm: '满屏填充', ds: '把设备分辨率改成显示器分辨率，画面铺满无黑边', size: [mon.w, mon.h], px: fillPx,
+      cost: fillPx > 1.6 ? '高负载' : '略降', cls: fillPx > 1.6 ? 'hi' : '',
+      tip: `画面改成 ${mon.w}×${mon.h} 比例，铺满无黑边。<b>设备自己那块屏会显示异常</b>；部分设备不接受这个尺寸（掌机实测最宽只到物理屏两倍），启动后按实际接受值显示。改档位前请先关掉正在用的应用。`,
+      run: () => api.launchScaled({ id: d.id, kind: 'fill', monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+      cmd: 'wm size ' + mon.w + 'x' + mon.h + ' · --fullscreen' });
+    if (isPad) out.forEach(t => { if (t.nm === '1.0× 重绘') t.dim = true; });
+    return out;
+  }
+  const vd = $('fVd').value.split('/')[0].split('x').map(Number);
+  return [{ nm: '应用独立屏', ds: '为单个应用创建虚拟屏与独立窗口（' + $('fVd').value + '）', size: vd, px: (vd[0] * vd[1]) / (pw * ph),
+    cost: '每窗口累加', cls: 'hi',
+    tip: '竖屏应用会把自己的窗口转成竖的（实测 B站、微信都会），横屏应用保持横屏。<b>每多开一个窗口，编码负担累加一份</b>。掌机的前端不会在第二块屏上画东西，那里会黑屏。',
+    run: () => { switchPage('wins'); }, cmd: '--new-display=' + $('fVd').value }];
+}
+function at() { const l = tiersFor(cur()); if (tier >= l.length) tier = 0; return l[tier]; }
+function modeDesc() {
+  return { mirror: '设备屏幕原样投出，一个窗口。兼容性最好，所有设备都支持。',
+    scale: '让设备以更高分辨率重绘画面，同样窗口里更清晰，代价是设备负载明显增加。',
+    multi: '每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排显示多个应用。' }[mode];
+}
+
+function renderTop() {
+  const d = cur();
+  $('topLink').className = 'link' + (d ? '' : ' off');
+  $('topLink').innerHTML = '<i></i><span>' + (d ? (d.via === 'usb' ? '有线已连接' : '无线已连接 · ' + d.id) : '未连接设备') + '</span>';
+  $('navMeta').innerHTML = `显示器 <b>${mon.w}×${mon.h}</b><br>引擎 <b>${esc(window.__engineVer || '—')}</b><br>已开窗口 <b id="navWins">—</b>`;
+}
+function renderDevs() {
+  $('devs').innerHTML = devs.length ? devs.map(d => {
+    const cur = String(d.currentSize || '');
+    const phy = String(d.physicalSize || '');
+    const sizeTxt = cur && phy && cur !== phy ? `当前 ${cur} · 物理 ${phy}` : (cur || phy || '?');
+    const dpiTxt = (d.currentDpi && d.physicalDpi && d.currentDpi !== d.physicalDpi)
+      ? `${d.currentDpi}dpi · 物理 ${d.physicalDpi}` : `${d.currentDpi || d.physicalDpi || '?'}dpi`;
+    return `<div class="row ${d.id === devId ? 'on' : ''}" data-id="${esc(d.id)}">
+      <span class="ic">${d.via === 'usb' ? '' : ''}</span>
+      <div><div class="nm">${esc(d.name || d.model || d.id)}</div>
+      <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div></div>
+      <span class="sp"></span><span class="tag ${d.via === 'usb' ? 'ok' : ''}">${d.via === 'usb' ? '有线' : '无线'}</span>
+      <span class="check"></span></div>`;
+  }).join('') : '<div class="empty">没扫到设备。USB 即插即现；无线设备点上方「无线连接」，自动扫描并首次配对。</div>';
+  [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
+}
+function renderSeg() {
+  const items = [['mirror', '屏幕镜像'], ['scale', '虚拟分辨率放大'], ['multi', '多屏实例']];
+  $('seg').innerHTML = items.map(([k, t]) =>
+    `<button class="${k === mode ? 'on' : ''}" data-k="${k}"><span class="dot"></span>${t}</button>`).join('');
+  [].forEach.call($('seg').querySelectorAll('button'), b => b.onclick = () => { mode = b.dataset.k; tier = 0; renderAll(); });
+  $('segDesc').textContent = modeDesc();
+}
+function renderTiers() {
+  const l = tiersFor(cur());
+  $('tiers').innerHTML = l.length ? l.map((t, i) =>
+    `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''}" data-i="${i}">
+      <span class="rd"></span><div><div class="nm">${esc(t.nm)}</div><div class="mt">${esc(t.ds)}</div></div>
+      <span class="sp"></span><span class="size">${t.size[0]}×${t.size[1]}</span>
+      <span class="pill ${t.cls}">${esc(t.cost)}</span></div>`).join('')
+    : '<div class="empty">先选一台设备。</div>';
+  [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { tier = +x.dataset.i; renderAll(); });
+}
+function renderOut() {
+  const t = at(), live = !!(t && t.size && t.size[0]);
+  $('monLabel').textContent = `输出预览 · 你的显示器 ${mon.w}×${mon.h}`;
+  const shot = $('shot');
+  shot.style.width = Math.max(2, live ? t.size[0] / mon.w * 100 : 0) + '%';
+  shot.style.height = Math.max(2, live ? t.size[1] / mon.h * 100 : 0) + '%';
+  shot.className = 'shot' + (live ? '' : ' dead');
+  $('shotT').textContent = live ? t.size[0] + '×' + t.size[1] : '无信号';
+  $('vSize').textContent = live ? t.size[0] + ' × ' + t.size[1] : '—';
+  $('vSize').className = 'v ' + (live ? 'ok' : 'no');
+  $('vH').textContent = live ? Math.round(t.size[1] / mon.h * 100) + '%' : '—';
+  $('mH').style.width = (live ? Math.min(100, t.size[1] / mon.h * 100) : 0) + '%';
+  $('vPx').textContent = t && t.px ? t.px.toFixed(2) + '×' : '—';
+  $('mPx').style.width = (t ? Math.min(100, t.px / 4 * 100) : 0) + '%';
+  $('vCost').textContent = t ? t.cost : '—';
+  $('vCost').className = 'v ' + (t ? (t.cls === 'no' ? 'no' : t.cls === 'hi' ? 'hi' : 'ok') : '');
+  const call = $('call');
+  call.innerHTML = t ? t.tip : '选一台设备开始。';
+  call.className = 'call ' + (t ? (t.cls === 'no' ? 'bad' : t.cls === 'hi' ? 'warn' : '') : '');
+  $('cmd').innerHTML = '$ scrcpy ' + (t ? '<em>' + esc(t.cmd) + '</em>' : '');
+  $('btnGo').disabled = !live;
+}
+async function renderWins() {
+  const list = await api.windows();
+  const box = $('winList');
+  box.innerHTML = list.length ? list.map(w =>
+    `<div class="row"><span class="ic">▦</span><div><div class="nm">${esc(w.title || '投屏窗口')}</div><div class="mt">进程 ${w.pid}</div></div>
+     <span class="sp"></span><span class="tag">运行中</span></div>`).join('')
+    : '<div class="empty">当前没有投屏窗口。</div>';
+  const nw = $('navWins'); if (nw) nw.textContent = String(list.length);
+  return list.length;
+}
+async function renderConn() {
+  const d = cur();
+  $('connBox').innerHTML = d ? `<div class="row"><span class="ic">${d.via === 'usb' ? '🔌' : '📶'}</span>
+    <div><div class="nm">${esc(d.name)}</div><div class="mt">${esc(d.id)}</div></div><span class="sp"></span>
+    <button class="b2" id="btnNet">${d.via === 'usb' ? '切到无线' : '切回有线'}</button></div>`
+    : '<div class="empty">没有在线设备。</div>';
+  const bn = $('btnNet');
+  if (bn) bn.onclick = async () => {
+    bn.disabled = true;
+    const r = d.via === 'usb' ? await api.toWireless(d.id) : await api.toWired(d.id);
+    toast(r.ok ? (d.via === 'usb' ? '已切到无线 ' + r.addr : '已切回有线') : '失败：' + (r.error || r.text), !r.ok);
+    await refresh();
+  };
+  const st = await api.state();
+  $('restoreBox').innerHTML = st
+    ? `<div class="row"><span class="ic">↺</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '出厂')} / ${esc(st.dpiOverride || '出厂')}</div></div>
+       <span class="sp"></span><button class="b2" id="btnDoRestore">立即还原</button></div>`
+    : `<div class="row"><span class="ic">↺</span><div><div class="nm">没有未还原的记录</div><div class="mt">如需强行恢复出厂分辨率，点右侧按钮</div></div>
+       <span class="sp"></span><button class="b2" id="btnDoRestore">强行恢复出厂</button></div>`;
+  $('btnDoRestore').onclick = async () => {
+    if (!d) return toast('没有在线设备', true);
+    await api.restore(d.id);
+    toast('已还原设备分辨率与显示大小');
+    await refresh();
+  };
+}
+async function renderRecent() {
+  const list = await api.recentApps();
+  $('recent').innerHTML = list.length ? list.map(a => `<span class="chip" data-a="${esc(a)}">${esc(a)}</span>`).join('')
+    : '<span class="empty">还没有记录。第一次打开应用后，名字会出现在这里。</span>';
+  [].forEach.call($('recent').querySelectorAll('.chip'), c => c.onclick = () => { $('appName').value = c.dataset.a; openApp(); });
+  $('winDesc').innerHTML = '点一个应用就新开一块屏、一个窗口。<b>掌机不支持</b>（前端不会在第二块屏上画东西，实测纯黑）。';
+}
+async function openApp() {
+  const d = cur(); if (!d) return toast('先选设备', true);
+  const name = $('appName').value.trim();
+  const r = await api.launchWindow({ id: d.id, app: name, size: $('fVd').value, bitrate: $('fVdBitrate').value });
+  if (!r.ok) return toast('启动失败：' + (r.error || ''), true);
+  toast(name ? '正在为「' + name + '」开窗口，手机上找应用要几秒' : '已开一块空白屏');
+  $('appName').value = '';
+  await renderRecent(); renderVdInfo(); setTimeout(renderWins, 3000);
+}
+
+/* ── P0：虚拟屏模板 + 残留清理 + 设备应用列表 ── */
+async function renderVdTemplates() {
+  const r = await api.vdTemplates();
+  const all = [].concat((r && r.presets) || [], (r && r.custom) || []);
+  if (!all.length) return;
+  $('fVd').innerHTML = all.map(t => `<option value="${esc(t.size)}">${esc(t.name)} · ${esc(t.size)}</option>`).join('');
+}
+async function renderVdInfo() {
+  const d = cur();
+  if (!d) { $('vdInfo').textContent = ''; return; }
+  try {
+    const r = await api.vdList(d.id);
+    const list = (r && r.displays) || [];
+    $('vdInfo').textContent = list.length
+      ? '当前虚拟屏：' + list.map(x => '#' + x.id).join('、') + '（共 ' + list.length + ' 个）。正常关窗口会自动释放，异常断开才会残留。'
+      : '当前没有虚拟屏。点下方应用「打开」会自动创建。';
+  } catch (e) { $('vdInfo').textContent = '查询失败：' + e.message; }
+}
+async function vdClean() {
+  const d = cur(); if (!d) return toast('先选设备', true);
+  const r = await api.vdCleanup(d.id);
+  const rs = (r && r.removed) || [];
+  const ok = rs.filter(x => x.ok).length, bad = rs.length - ok;
+  toast(bad ? '清理：成功 ' + ok + ' 个，失败 ' + bad + ' 个（该设备无 remove 权限，可重启设备清除）'
+        : (rs.length ? '已清理 ' + ok + ' 个残留虚拟屏' : '没有残留虚拟屏'));
+  renderVdInfo();
+}
+let appsCache = [];
+async function renderApps() {
+  const d = cur();
+  if (!d) { appsCache = []; $('appsBox').innerHTML = '<div class="empty">先选设备。</div>'; return; }
+  $('appsBox').innerHTML = '<div class="empty">正在读取设备应用列表…</div>';
+  try {
+    const r = await api.appsList(d.id);
+    if (!r.ok) { $('appsBox').innerHTML = '<div class="empty">' + esc(r.error || '读取失败') + '</div>'; return; }
+    appsCache = r.apps || [];
+    paintApps();
+  } catch (e) { $('appsBox').innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>'; }
+}
+function paintApps() {
+  const kw = $('appFilter').value.trim().toLowerCase();
+  const list = appsCache.filter(a => !kw || a.pkg.toLowerCase().indexOf(kw) >= 0).slice(0, 80);
+  $('appsBox').innerHTML = list.length ? list.map(a => {
+    const pkg = a.pkg, dot = pkg.lastIndexOf('.');
+    const short = dot >= 0 ? pkg.substring(dot + 1) : pkg;
+    return `<div class="row">
+      <span class="ic">${esc((short.charAt(0) || '?').toUpperCase())}</span>
+      <div><div class="nm">${esc(pkg)}</div><div class="mt">${a.activity ? '启动入口 ' + esc(a.activity) : '未解析到启动入口'}</div></div>
+      <span class="sp"></span>
+      <button class="b2" data-pkg="${esc(pkg)}" data-act="${esc(a.activity || '')}">打开</button>
+    </div>`;
+  }).join('') : (appsCache.length ? '<div class="empty">没匹配到，换个关键词。</div>' : '<div class="empty">设备上没有第三方应用。</div>');
+  [].forEach.call($('appsBox').querySelectorAll('button'), b => b.onclick = () => openInVd(b.dataset.pkg, b.dataset.act));
+}
+async function openInVd(pkg, act) {
+  const d = cur(); if (!d) return toast('先选设备', true);
+  const r = await api.appsLaunch({ id: d.id, pkg, activity: act, size: $('fVd').value });
+  if (!r.ok) return toast('启动失败：' + (r.error || '未知'), true);
+  toast((r.created ? '已创建虚拟屏 #' + r.displayId + ' 并启动 ' : '已在虚拟屏 #' + r.displayId + ' 启动 ') + pkg);
+  renderVdInfo(); setTimeout(renderWins, 3000);
+}
+async function tmplSave() {
+  const n = $('tmplName').value.trim(), s = $('tmplSize').value.trim();
+  if (!n || !s) return toast('模板名和分辨率都要填', true);
+  const r = await api.vdTemplateSave({ name: n, size: s });
+  if (!r.ok) return toast(r.error || '保存失败', true);
+  $('tmplName').value = ''; $('tmplSize').value = '';
+  await renderVdTemplates();
+  const opts = $('fVd').options;
+  for (let i = 0; i < opts.length; i++) if (opts[i].text.indexOf(n) === 0) { $('fVd').selectedIndex = i; break; }
+  toast('已保存模板「' + n + '」');
+}
+async function tmplDelete() {
+  const sel = $('fVd').selectedOptions[0];
+  if (!sel) return toast('先选一个模板', true);
+  const name = sel.text.split('·')[0].trim();
+  const r = await api.vdTemplateDelete(name);
+  if (r && r.ok) { toast('已尝试删除「' + name + '」（内置模板不可删）'); await renderVdTemplates(); }
+}
+
+function renderAll() { renderTop(); renderDevs(); renderSeg(); renderTiers(); renderOut(); }
+function switchPage(k) {
+  [].forEach.call(document.querySelectorAll('.nav a'), a => a.classList.toggle('on', a.dataset.page === k));
+  [].forEach.call(document.querySelectorAll('.page'), p => p.classList.toggle('on', p.id === 'pg-' + k));
+  $('outPanel').style.display = k === 'cast' ? '' : 'none';
+  if (k === 'wins') { renderVdTemplates(); renderVdInfo(); renderApps(); renderRecent(); renderWins(); }
+  if (k === 'conn') renderConn();
+}
+async function refresh() {
+  const r = await api.scan();
+  if (r.error) { $('devs').innerHTML = '<div class="empty">' + esc(r.error) + '</div>'; return; }
+  devs = r.devices || [];
+  window.__engineVer = r.version || '未找到';
+  $('topEngine').innerHTML = '<i></i><span>scrcpy ' + esc(r.version || '未找到') + '</span>';
+  if (!devs.find(d => d.id === devId)) devId = devs.length ? devs[0].id : null;
+  tier = 0;
+  renderAll(); renderConn(); renderWins();
+}
+
+[].forEach.call(document.querySelectorAll('.nav a'), a => a.onclick = () => switchPage(a.dataset.page));
+$('btnScan').onclick = refresh;
+
+async function discoverOnce() {
+  const msg = $('wifiScanMsg');
+  msg.className = 'wm';
+  msg.textContent = '正在局域网里找已开启的无线调试…';
+  try {
+    const found = await api.discover();
+    wifiFound = Array.isArray(found) ? found : [];
+    if (!wifiFound.length) {
+      msg.textContent = '没扫到无线调试广播。确认手机上那个开关是开着的、屏幕没锁，或用手动输入。';
+      $('wifiDevs').innerHTML = '';
+      return;
+    }
+    msg.textContent = '发现 ' + wifiFound.length + ' 台设备，点右侧按钮直连或断开。';
+    renderWifiDevs();
+  } catch (e) {
+    msg.textContent = '发现过程出错：' + e.message;
+  }
+}
+function renderWifiDevs() {
+  $('wifiDevs').innerHTML = wifiFound.map(f => {
+    const nm = esc(f.name || f.addr);
+    const tag = f.connected ? '<span class="tag ok">已连接</span>'
+      : (f.kind === 'connect' ? '<span class="tag">可直连</span>' : '<span class="tag no">需配对</span>');
+    const btn = f.connected
+      ? `<button class="b2" data-act="dis" data-addr="${esc(f.addr)}">断开</button>`
+      : `<button class="b2" data-act="con" data-addr="${esc(f.addr)}" data-kind="${esc(f.kind)}">连接</button>`;
+    return `<div class="row"><span class="ic">📶</span>
+      <div><div class="nm">${nm}</div><div class="mt">${esc(f.addr)}</div></div>
+      <span class="sp"></span>${tag}${btn}</div>`;
+  }).join('');
+  [].forEach.call($('wifiDevs').querySelectorAll('button'), b => b.onclick = () => {
+    if (b.dataset.act === 'dis') wifiDisconnect(b.dataset.addr);
+    else wifiQuickConnect(b.dataset.addr, b.dataset.kind);
+  });
+}
+async function wifiQuickConnect(addr, kind) {
+  const [ip, port] = addr.split(':');
+  $('wifiIp').value = ip; $('wifiPort').value = port;
+  if (kind === 'pairing') {
+    if (!$('wifiCode').value.trim()) {
+      $('wifiCode').focus();
+      const m = $('wifiMsg'); m.className = 'wm bad';
+      m.textContent = '这台设备还没配对过：把手机无线调试页上的配对码填进「配对码」框，再点一次「连接」。配对成功后以后不用再输。';
+      return;
+    }
+  }
+  wifiGo();
+}
+async function wifiDisconnect(addr) {
+  const r = await api.disconnect(addr);
+  toast(r.ok ? '已断开 ' + addr : '断开失败：' + (r.error || r.text), !r.ok);
+  await discoverOnce(); await refresh();
+}
+
+async function wifiGo() {
+  const ip = $('wifiIp').value.trim();
+  const port = $('wifiPort').value.trim();
+  const code = $('wifiCode').value.trim();
+  const msg = $('wifiMsg'), btn = $('btnWifiGo');
+  if (!ip) { msg.className = 'wm bad'; msg.textContent = '先填手机无线调试页上的 IP 地址，形如 192.168.3.12'; $('wifiIp').focus(); return; }
+  if (!port) { msg.className = 'wm bad'; msg.textContent = '还要填端口，就是手机页面上 IP 后面那个数字'; $('wifiPort').focus(); return; }
+  btn.disabled = true; btn.textContent = '连接中…';
+  msg.className = 'wm'; msg.textContent = code ? '正在配对，再找投屏端口…' : '正在连接…';
+  try {
+    const r = await api.wifiConnect({ ip, port, code });
+    msg.className = 'wm' + (r && r.ok ? '' : ' bad');
+    msg.textContent = (r && r.text) || (r && r.ok ? '已连上' : '失败');
+    if (r && r.ok) { await refresh(); await discoverOnce(); $('wifiCode').value = ''; }
+  } catch (e) {
+    msg.className = 'wm bad'; msg.textContent = '连接出错：' + e.message;
+  }
+  btn.disabled = false; btn.textContent = '连接';
+}
+
+$('btnWifi').onclick = async () => {
+  const p = $('wifiPanel');
+  p.hidden = !p.hidden;
+  if (p.hidden) return;
+  discoverOnce();
+  $('wifiIp').focus();
+};
+$('btnWifiScan').onclick = discoverOnce;
+$('btnWifiGo').onclick = wifiGo;
+['wifiIp', 'wifiPort', 'wifiCode'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') wifiGo(); }));
+$('btnGo').onclick = async () => {
+  const t = at(); if (!t || !t.run) return;
+  $('btnGo').disabled = true; $('btnGo').textContent = '启动中…';
+  try {
+    const r = await t.run();
+    if (r && r.error) toast(r.error, true);
+    else if (r && r.applied) toast('已按设备实际接受值 ' + r.applied.w + '×' + r.applied.h + ' 投屏');
+    setTimeout(() => { renderWins(); }, 2500);
+  } catch (e) { toast('启动异常：' + e.message, true); }
+  $('btnGo').textContent = '开始投屏'; $('btnGo').disabled = false;
+};
+$('btnBlank').onclick = () => openApp();
+$('appName').addEventListener('keydown', e => { if (e.key === 'Enter') openApp(); });
+$('btnVdClean').onclick = vdClean;
+$('btnTmplSave').onclick = tmplSave;
+$('btnTmplDel').onclick = tmplDelete;
+$('btnAppsRefresh').onclick = renderApps;
+$('appFilter').addEventListener('input', paintApps);
+$('btnRestore').onclick = async () => { const d = cur(); if (!d) return toast('没有在线设备', true); await api.restore(d.id); toast('已还原'); refresh(); };
+$('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
+
+/* ── 关于与打赏 ── */
+async function openAbout() {
+  try {
+    const r = await api.about();
+    $('aboutMeta').textContent = '引擎 ' + ((r && r.engine) || '—') + ' · ' + ((r && r.license) || '');
+  } catch (e) { }
+  $('aboutModal').hidden = false;
+}
+function closeAbout() { $('aboutModal').hidden = true; }
+$('btnAbout').onclick = openAbout;
+$('btnAboutClose').onclick = closeAbout;
+$('aboutModal').addEventListener('click', e => { if (e.target.classList.contains('mask')) closeAbout(); });
+$('btnSaveQr').onclick = async () => {
+  const r = await api.saveRewardQr();
+  toast(r && r.ok ? '二维码已保存到桌面' : ('保存失败：' + ((r && r.error) || '')), !(r && r.ok));
+};
+
+(async () => {
+  mon = await api.monitor();
+  await refresh();
+  setInterval(renderWins, 5000);
+})();
+</script>
+</body>
+</html>

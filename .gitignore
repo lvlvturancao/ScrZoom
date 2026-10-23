@@ -1,0 +1,19 @@
+# 编译产物
+投屏工作台.exe
+*.exe
+
+# 引擎与第三方运行时（请从 scrcpy / NuGet 获取）
+engine/
+Microsoft.Web.WebView2.Core.dll
+Microsoft.Web.WebView2.WinForms.dll
+WebView2Loader.dll
+
+# 本地运行数据
+*.log
+debug.log
+
+# 构建系统临时文件
+bin/
+obj/
+*.user
+.vs/
