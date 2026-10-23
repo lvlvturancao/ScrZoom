@@ -38,9 +38,10 @@ button,select,input{font:inherit;color:inherit}
 .nav .meta b{color:var(--text);font-variant-numeric:tabular-nums}
 
 .main{flex:1;padding:18px 22px;overflow:auto;min-width:0}
-.sec{margin-bottom:22px}
+.sec{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin-bottom:14px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
 .h{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
-.h b{font-size:13px;font-weight:650}
+.h b{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:7px}
+.h b::before{content:'';width:3px;height:12px;border-radius:2px;background:var(--accent);flex-shrink:0}
 .h span{font-size:11.5px;color:var(--text-3)}
 
 .rows{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}
@@ -108,15 +109,28 @@ button,select,input{font:inherit;color:inherit}
 .call.bad{border-left-color:var(--bad);background:var(--bad-soft);color:#7a2b28}
 .call b{color:var(--text);font-weight:600}
 
+/* ── 信息提示：悬浮/点击显示说明，保持界面精简 ── */
+.tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:9.5px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:-1px}
+.tip:hover,.tip.open{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.tip .bub{display:none;position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);width:280px;max-width:52vw;background:#22272c;color:#eef1f3;font-size:11px;line-height:1.7;font-weight:400;padding:10px 13px;border-radius:9px;box-shadow:0 12px 30px -8px rgba(0,0,0,.5);z-index:70;text-align:left;white-space:normal}
+.tip .bub b{color:#fff}
+.tip .bub::before{content:'';position:absolute;left:50%;top:-5px;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:#22272c}
+.tip:hover .bub,.tip.open .bub{display:block}
+.tip.up .bub{top:auto;bottom:calc(100% + 9px)}
+.tip.up .bub::before{top:auto;bottom:-5px}
+.tip.right .bub{left:auto;right:-10px;transform:none}
+.tip.right .bub::before{left:auto;right:16px}
+.tip.inline{margin-left:6px}
+
 .foot{border-top:1px solid var(--line);background:var(--surface);padding:11px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
 .cmd{font-family:var(--mono);font-size:11px;color:var(--text-2);background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:6px 10px;max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cmd em{color:var(--accent);font-style:normal}
 .foot .sp{flex:1}
 .b2{background:var(--surface);border:1px solid var(--line-strong);border-radius:7px;padding:7px 12px;font-size:12.5px;color:var(--text-2);cursor:pointer}
 .b2:hover{background:var(--sunken);color:var(--text)}
-.go{background:var(--text);color:#fff;border:0;border-radius:7px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer}
-.go:hover{background:#000}
-.go:disabled{background:var(--line-strong);cursor:not-allowed}
+.go{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 22px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px -2px rgba(11,107,95,.45)}
+.go:hover{background:#08574c}
+.go:disabled{background:var(--line-strong);box-shadow:none;cursor:not-allowed}
 
 .searchrow{display:flex;gap:8px;margin-bottom:10px}
 .searchrow input{flex:1;background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;padding:8px 10px;font-size:12.5px}
@@ -124,7 +138,9 @@ button,select,input{font:inherit;color:inherit}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{border:1px solid var(--line);background:var(--surface);border-radius:20px;padding:5px 12px;font-size:12px;cursor:pointer;color:var(--text-2)}
 .chip:hover{border-color:var(--accent);color:var(--accent)}
-.empty{font-size:12px;color:var(--text-3);padding:14px 2px;line-height:1.8}
+.empty{font-size:12px;color:var(--text-3);padding:15px 2px;line-height:1.8;border:1px dashed var(--line-strong);border-radius:8px;background:var(--bg);text-align:center}
+.empty .act{color:var(--accent);font-weight:600;cursor:pointer}
+.empty .act:hover{text-decoration:underline}
 .wifi{margin-top:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:12px 13px}
 .wifi .wt{font-size:11.5px;color:var(--text-3);line-height:1.85;margin-bottom:10px}
 .wifi .wr{display:flex;gap:8px;align-items:center}
@@ -176,14 +192,15 @@ button,select,input{font:inherit;color:inherit}
       <!-- 投屏 -->
       <div class="page on" id="pg-cast">
         <div class="sec">
-          <div class="h" style="align-items:center"><b>设备</b><span>USB 即插即现；无线设备需首次配对，之后自动连接</span>
+          <div class="h" style="align-items:center"><b>设备</b>
+            <span class="tip">?<span class="bub">USB 即插即现；无线设备需首次配对，之后自动连接。找到设备后点一下选中，再往下选投屏方式与档位。</span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnScan">重新扫描</button>
             <button class="iconbtn" id="btnWifi">无线连接</button>
           </div>
           <div class="rows" id="devs"></div>
           <div class="wifi" id="wifiPanel" hidden>
-            <div class="wt">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</div>
+            <div class="wt">开启无线调试后点「扫描」，自动发现局域网设备，首次连接填配对码。<span class="tip inline">?<span class="bub">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</span></span></div>
             <div class="wr" style="margin-bottom:9px">
               <button class="iconbtn" id="btnWifiScan">重新扫描</button>
               <span class="wm" id="wifiScanMsg" style="flex:1;margin-top:0"></span>
@@ -220,7 +237,8 @@ button,select,input{font:inherit;color:inherit}
       <!-- 应用窗口（虚拟屏电脑模式） -->
       <div class="page" id="pg-wins">
         <div class="sec">
-          <div class="h"><b>虚拟屏电脑模式</b><span>PC键鼠操作独立桌面；掌机按键不控制虚拟屏画面</span>
+          <div class="h"><b>虚拟屏电脑模式</b>
+            <span class="tip">?<span class="bub">电脑键鼠操作一块独立桌面，掌机按键/触屏不控制虚拟屏画面。虚拟屏与掌机主屏互不影响，适合在电脑上并排使用多个应用。</span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnVdClean">清理残留虚拟屏</button>
           </div>
@@ -237,7 +255,8 @@ button,select,input{font:inherit;color:inherit}
           </div>
         </div>
         <div class="sec">
-          <div class="h"><b>设备应用</b><span>点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块</span>
+          <div class="h"><b>设备应用</b>
+            <span class="tip">?<span class="bub">点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块。列表读取设备已安装的第三方应用，本地缓存增量解析。</span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnAppsRefresh">刷新列表</button>
           </div>
@@ -468,15 +487,17 @@ function renderDevs() {
       <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div></div>
       <span class="sp"></span><span class="tag ${d.via === 'usb' ? 'ok' : ''}">${d.via === 'usb' ? '有线' : '无线'}</span>
       <span class="check"></span></div>`;
-  }).join('') : '<div class="empty">没扫到设备。USB 即插即现；无线设备点上方「无线连接」，自动扫描并首次配对。</div>';
+  }).join('') : '<div class="empty">没扫到设备。<span class="act">重新扫描</span> 或点上方「无线连接」扫描局域网并首次配对。</div>';
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
+  const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
 function renderSeg() {
   const items = [['mirror', '屏幕镜像'], ['scale', '虚拟分辨率放大'], ['multi', '多屏实例']];
   $('seg').innerHTML = items.map(([k, t]) =>
     `<button class="${k === mode ? 'on' : ''}" data-k="${k}"><span class="dot"></span>${t}</button>`).join('');
   [].forEach.call($('seg').querySelectorAll('button'), b => b.onclick = () => { mode = b.dataset.k; tier = 0; renderAll(); });
-  $('segDesc').textContent = modeDesc();
+  const short = { mirror: '原样镜像，兼容性最好', scale: '更高分辨率重绘，更清晰', multi: '每应用一块屏，可并排' }[mode];
+  $('segDesc').innerHTML = '<span class="tip inline">?<span class="bub">' + modeDesc() + '</span></span>' + short;
 }
 function renderTiers() {
   const l = tiersFor(cur());
@@ -484,7 +505,8 @@ function renderTiers() {
     `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''}" data-i="${i}">
       <span class="rd"></span><div><div class="nm">${esc(t.nm)}</div><div class="mt">${esc(t.ds)}</div></div>
       <span class="sp"></span><span class="size">${t.size[0]}×${t.size[1]}</span>
-      <span class="pill ${t.cls}">${esc(t.cost)}</span></div>`).join('')
+      <span class="pill ${t.cls}">${esc(t.cost)}</span>
+      ${t.tip ? '<span class="tip">?<span class="bub">' + t.tip + '</span></span>' : ''}</div>`).join('')
     : '<div class="empty">先选一台设备。</div>';
   [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { tier = +x.dataset.i; renderAll(); });
 }
@@ -505,7 +527,9 @@ function renderOut() {
   $('vCost').textContent = t ? t.cost : '—';
   $('vCost').className = 'v ' + (t ? (t.cls === 'no' ? 'no' : t.cls === 'hi' ? 'hi' : 'ok') : '');
   const call = $('call');
-  call.innerHTML = t ? t.tip : '选一台设备开始。';
+  call.innerHTML = t
+    ? '<span class="tip">?<span class="bub">' + (t.tip || '当前档位的详细说明。') + '</span></span><b>' + esc(t.nm) + '</b><span style="opacity:.85"> · ' + esc(t.cost || '') + '</span>'
+    : '<span class="tip">?<span class="bub">选一台设备，选好投屏方式与档位，点下方「开始投屏」。</span></span>选一台设备开始。';
   call.className = 'call ' + (t ? (t.cls === 'no' ? 'bad' : t.cls === 'hi' ? 'warn' : '') : '');
   $('cmd').innerHTML = '$ scrcpy ' + (t ? '<em>' + esc(t.cmd) + '</em>' : '');
   $('btnGo').disabled = !live;
@@ -551,7 +575,7 @@ async function renderRecent() {
   $('recent').innerHTML = list.length ? list.map(a => `<span class="chip" data-a="${esc(a)}">${esc(a)}</span>`).join('')
     : '<span class="empty">还没有记录。第一次打开应用后，名字会出现在这里。</span>';
   [].forEach.call($('recent').querySelectorAll('.chip'), c => c.onclick = () => { $('appName').value = c.dataset.a; openApp(); });
-  $('winDesc').innerHTML = '点一个应用就新开一块屏、一个窗口。<b>掌机不支持</b>（前端不会在第二块屏上画东西，实测纯黑）。';
+  $('winDesc').innerHTML = '点一个应用就新开一块屏、一个窗口。<span class="tip inline">?<span class="bub">部分设备（如掌机）的前端不会在第二块屏上画东西，虚拟屏内实测纯黑；手机 / PC 上的应用正常显示。</span></span>';
 }
 async function openApp() {
   const d = cur(); if (!d) return toast('先选设备', true);
@@ -792,6 +816,19 @@ $('btnSaveQr').onclick = async () => {
   await refresh();
   setInterval(renderWins, 5000);
 })();
+
+/* ── 提示按钮：点击切换显示说明（悬浮由 CSS hover 触发） ── */
+document.addEventListener('click', e => {
+  const t = e.target.closest('.tip');
+  if (!t) return;
+  e.stopPropagation();
+  const was = t.classList.contains('open');
+  [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
+  if (!was) t.classList.add('open');
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.tip')) [].forEach.call(document.querySelectorAll('.tip.open'), x => x.classList.remove('open'));
+});
 </script>
 </body>
 </html>
