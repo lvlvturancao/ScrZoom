@@ -56,6 +56,7 @@ button,select,input{font:inherit;color:inherit}
 .row .ic.ai img{width:28px;height:28px;display:block;object-fit:contain}
 .row .nm{font-size:12.5px;font-weight:600}
 .row .mt{font-size:11px;color:var(--text-3);margin-top:1px;font-variant-numeric:tabular-nums}
+.row .addr{font-size:10.5px;color:var(--text-3);opacity:.75;margin-top:1px;font-variant-numeric:tabular-nums;letter-spacing:.2px}
 .row .sp{flex:1}
 .tag{font-size:10.5px;padding:2px 7px;border-radius:20px;background:var(--sunken);color:var(--text-2);border:1px solid var(--line)}
 .tag.ok{background:var(--accent-soft);color:var(--accent);border-color:#cfe6e1}
@@ -223,9 +224,7 @@ button,select,input{font:inherit;color:inherit}
             </div>
             <div class="wm" id="wifiMsg"></div>
           </div>
-          <div class="vsep"></div>
-          <div class="subh">连接设备</div>
-          <div class="rows" id="devs"></div>
+          <div class="rows" id="devs" style="margin-top:10px"></div>
         </div>
         <div class="sec">
           <div class="h"><b>投屏方式</b></div>
@@ -489,7 +488,8 @@ function renderTop() {
   $('navMeta').innerHTML = `显示器 <b>${mon.w}×${mon.h}</b><br>引擎 <b>${esc(window.__engineVer || '—')}</b><br>已开窗口 <b id="navWins">—</b>`;
 }
 function renderDevs() {
-  const list = devs; // 已连接设备（有线+无线）全部共同显示，不受 USB/无线 tab 过滤
+  // 已连接设备按连接方式切换显示：USB tab 只列有线，无线 tab 只列无线
+  const list = devs.filter(d => (devTab === 'wifi' ? d.via === 'wireless' : d.via === 'usb'));
   $('devs').innerHTML = list.length ? list.map(d => {
     const cur = String(d.currentSize || '');
     const phy = String(d.physicalSize || '');
@@ -497,14 +497,17 @@ function renderDevs() {
     const dpiTxt = (d.currentDpi && d.physicalDpi && d.currentDpi !== d.physicalDpi)
       ? `${d.currentDpi}dpi · 物理 ${d.physicalDpi}` : `${d.currentDpi || d.physicalDpi || '?'}dpi`;
     const viaTxt = d.via === 'usb' ? '有线' : '无线';
+    const addrRow = d.via === 'wireless' ? `<div class="mt addr">${esc(d.id)}</div>` : '';
     return `<div class="row ${d.id === devId ? 'on' : ''}" data-id="${esc(d.id)}">
       <span class="ic">${d.via === 'usb' ? '🔌' : '📶'}</span>
       <div><div class="nm">${esc(d.name || d.model || d.id)}</div>
-      <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div></div>
+      <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div>${addrRow}</div>
       <span class="sp"></span>
       <span class="tag ok">已连接 · ${viaTxt}</span>
       <span class="check"></span></div>`;
-  }).join('') : '<div class="empty">没有已连接设备。用上方「连接设置」连接设备。</div>';
+  }).join('') : (devTab === 'wifi'
+    ? '<div class="empty">没有已连接无线设备。用上方「扫描局域网」发现并连接。</div>'
+    : '<div class="empty">没有已连接 USB 设备。插上数据线并打开 USB 调试后点「重新扫描」。</div>');
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
@@ -838,7 +841,7 @@ $('btnWifiScan').onclick = discoverOnce;
 $('btnWifiGo').onclick = wifiGo;
 ['wifiIp', 'wifiPort', 'wifiCode'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') wifiGo(); }));
 $('btnGo').onclick = async () => {
-  const t = at(); if (!t || !t.run) { toast('先在「连接设备」列表里点选一台设备', true); return; }
+  const t = at(); if (!t || !t.run) { toast('先在设备列表里点选一台设备', true); return; }
   $('btnGo').disabled = true; $('btnGo').textContent = '启动中…';
   try {
     const r = await t.run();
