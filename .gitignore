@@ -17,3 +17,28 @@ bin/
 obj/
 *.user
 .vs/
+
+# 图标生成的中间图
+vibe_images/
+icon-options*.png
+icon-opt-*.png
+assets/_*.png
+assets/icon-src.png
+assets/icon-matted.png
+assets/icon-clean.png
+assets/icon-crop-preview.png
+assets/icon-cand-*.png
+assets/icon-options*.png
+assets/icon-new-preview.png
+assets/icon-on-taskbar.png
+assets/ui-style-preview.png
+assets/ui-wifi-scan-preview.png
+assets/homepage-shots-preview.png
+assets/crop_icon.py
+assets/matte_icon.py
+assets/final_icon.py
+assets/make_ico.py
+
+# Cloudflare 本地状态与安装包（安装包作为 Release 资产，不进仓库）
+.wrangler/
+cloudflare-pages/public/*.zip

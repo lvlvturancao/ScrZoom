@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="theme-color" content="#0A0E12">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>水月清影 - 安卓设备投屏放大工具（手机 / 平板 / 掌机投电脑）</title>
+<meta name="description" content="水月清影是一款 Windows 上的安卓投屏工具：插线即投，也能配一次无线后不插线；支持让设备按更高分辨率重绘画面、一个设备开多个独立窗口、改过的分辨率与 DPI 自动还原。免费无广告，画面只走 USB 或局域网。">
+<link rel="stylesheet" href="fonts/faces.css">
+<script>document.documentElement.classList.add('js');</script>
+<style>
+/* 方向：舱内（horizon）。令牌取自 D:\code\ui设计\styles\horizon\tokens.css，
+   这份原型是独立单文件，所以把定义抄在这里，其余样式只引用变量。 */
+:root {
+  color-scheme: dark;
+
+  --c-bg: #0A0E12;        /* Void Hull — 页面底，近黑偏冷青 */
+  --c-surface: #121820;   /* Panel — 面板层 */
+  --c-raised: #1A222C;    /* Deck — 抬起层，只给活动控件 */
+  --c-ink: #DCE4EC;       /* Star Dust — 主文字 */
+  --c-muted: #8A97A4;     /* Graphite — 次要文字 */
+  --c-dim: #4A5561;       /* Iron — 发丝线与三级信息 */
+  --c-accent: #2E8FE0;    /* 品牌蓝 — 取自软件窗口标题栏 #0579D2，提亮一档以便在深底上作信号色 */
+  --c-metal: #9FB3C4;     /* Chrome — 结构线与图标 */
+  --c-on-accent: #0A0E12; /* On Signal — 压在信号色上的文字，实测 5.64:1 */
+
+  --font-display: 'Geist Variable', 'Noto Sans SC Variable', sans-serif;
+  --font-body: 'Geist Variable', 'Noto Sans SC Variable', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'Noto Sans SC Variable', monospace;
+
+  --t-display: clamp(42px, 7.4vw, 104px);
+  --t-h2: clamp(26px, 3.6vw, 46px);
+  --t-h3: clamp(17px, 1.9vw, 22px);
+  --t-body: 16px;
+  --t-small: 13px;
+  --track-display: -.045em;
+  --lh-display: .92;
+  --track-label: .2em;
+
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 40px; --s-7: 64px;
+  --r-1: 2px; --r-2: 4px; --r-3: 8px;
+  --hairline: rgba(159, 179, 196, .14);
+  --hairline-strong: rgba(159, 179, 196, .26);
+  --panel-edge: linear-gradient(180deg, rgba(220, 228, 236, .07), rgba(220, 228, 236, 0) 42%);
+  --shadow: 0 1px 0 rgba(220, 228, 236, .05), 0 24px 60px -32px rgba(0, 0, 0, .92);
+
+  --ease: cubic-bezier(.16, 1, .3, 1);
+  --d-micro: 120ms;
+  --d-enter: 420ms;
+  --d-scroll: 720ms;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--c-bg);
+  color: var(--c-ink);
+  font-family: var(--font-body);
+  font-size: var(--t-body);
+  font-weight: 300;
+  line-height: 1.75;
+  overflow-x: clip;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, p, ul, ol, dl, dd, figure { margin: 0; }
+ul, ol { list-style: none; padding: 0; }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+img { display: block; max-width: 100%; }
+code { font-family: var(--font-mono); font-size: .88em; color: var(--c-metal); }
+
+.wrap { width: min(1240px, 100% - clamp(32px, 7vw, 96px)); margin-inline: auto; }
+
+/* 机身网格 + 一层月影，回应名字里的水与月，压得很低 */
+.shell {
+  position: relative;
+  overflow-x: clip;   /* 层叠图有意压出边界，用 clip 兜住；不用 hidden，那会让吸顶栏失效 */
+  background:
+    radial-gradient(58% 44% at 82% 4%, rgba(159, 179, 196, .1), transparent 62%),
+    radial-gradient(40% 30% at 88% 12%, rgba(220, 228, 236, .07), transparent 70%),
+    repeating-linear-gradient(90deg, rgba(159, 179, 196, .035) 0 1px, transparent 1px 104px),
+    repeating-linear-gradient(0deg, rgba(159, 179, 196, .025) 0 1px, transparent 1px 104px);
+}
+
+/* 扫描线：只在首屏走一次，之后停在边缘不再打扰阅读 */
+.scan {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.scan::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 240px;
+  background: linear-gradient(90deg, transparent, rgba(46, 143, 224, .07) 45%, rgba(46, 143, 224, .13) 50%, rgba(46, 143, 224, .07) 55%, transparent);
+  animation: scan 11s var(--ease) 1 both;
+}
+@keyframes scan { from { left: -260px; } to { left: 106%; } }
+
+/* ---------- 顶栏 ---------- */
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) 0;
+  background: rgba(10, 14, 18, .86);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--hairline);
+}
+.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); }
+
+.brand { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; text-decoration: none; }
+.brand img { width: 26px; height: 26px; border-radius: var(--r-2); }
+.brand b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.brand span { font-family: var(--font-mono); font-size: 11px; color: var(--c-dim); }
+
+.nav { display: flex; gap: var(--s-5); }
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 13.5px;
+  color: var(--c-muted);
+  text-decoration: none;
+  transition: color var(--d-micro) var(--ease);
+}
+.nav a:hover { color: var(--c-ink); }
+
+/* ---------- 首屏 ---------- */
+.hero { position: relative; padding: clamp(56px, 9vw, 128px) 0 clamp(48px, 7vw, 96px); }
+.hero-in { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 72px); align-items: center; }
+
+.kicker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--c-muted);
+  margin-bottom: var(--s-5);
+}
+.kicker::before { content: ''; width: 26px; height: 1px; background: var(--c-accent); }
+
+h1 {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.9vw, 56px);
+  font-weight: 800;
+  letter-spacing: var(--track-display);
+  line-height: 1.02;
+  max-width: 20ch;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+h1 em { font-style: normal; color: var(--c-accent); }
+
+.hero-sub { margin-top: var(--s-5); max-width: 40ch; font-size: clamp(15.5px, 1.7vw, 18px); color: var(--c-muted); }
+
+.hero-act { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-6); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 20px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-2);
+  background: var(--c-surface);
+  background-image: var(--panel-edge);
+  box-shadow: inset 0 1px 0 rgba(220, 228, 236, .07);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform var(--d-micro) var(--ease), border-color var(--d-micro) var(--ease), box-shadow var(--d-micro) var(--ease);
+}
+.btn:hover { border-color: var(--c-accent); }
+.btn:active { transform: translateY(1px); box-shadow: inset 0 2px 8px rgba(0, 0, 0, .5); }
+.btn:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+.btn-strong { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-on-accent); box-shadow: 0 14px 34px -18px rgba(46, 143, 224, .6); }
+.btn-strong:hover { border-color: var(--c-accent); }
+
+.hero-meta { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-5); margin-top: var(--s-5); font-family: var(--font-mono); font-size: 11.5px; color: var(--c-dim); }
+.hero-meta b { color: var(--c-metal); font-weight: 400; }
+
+/* 一机多屏：三块真截图按各自比例完整显示，靠层叠错位表达并行关系。
+   不裁切——截图看不清就等于没放。也不加假窗口外壳。 */
+/* 首屏两张投屏实拍，可横向滑动切换。不加假窗口外壳，也不裁切。 */
+.shots {
+  width: min(100%, 520px);
+  justify-self: center;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-3);
+  overflow: hidden;
+  background: var(--c-surface);
+  box-shadow: var(--shadow);
+  touch-action: pan-y;
+}
+.shots:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 3px; }
+.shots-view { overflow: hidden; }
+.shots-track { display: flex; transition: transform var(--d-enter) var(--ease); }
+.shots-track figure {
+  flex: 0 0 100%;
+  margin: 0;
+  aspect-ratio: 16 / 10;
+  display: grid;
+  place-items: center;
+  background: var(--c-bg);
+}
+.shots-track img { width: 100%; height: 100%; object-fit: contain; }
+.shots-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 6px 14px 6px 16px;
+  border-top: 1px solid var(--hairline);
+}
+.shots-cap { font-family: var(--font-mono); font-size: 11.5px; color: var(--c-muted); letter-spacing: .04em; }
+.shots-dots { display: flex; gap: 4px; }
+.shots-dots button {
+  position: relative;
+  width: 32px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.shots-dots button::after {
+  content: '';
+  position: absolute;
+  left: 4px; right: 4px; top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  background: var(--c-dim);
+  transition: background var(--d-micro) var(--ease);
+}
+.shots-dots button:hover::after { background: var(--c-muted); }
+.shots-dots button[aria-selected='true']::after { background: var(--c-accent); }
+.shots-dots button:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -8px; }
+
+/* ---------- 区块通用 ---------- */
+.band { padding: clamp(48px, 6.5vw, 88px) 0; border-top: 1px solid var(--hairline); }
+.band-h { display: grid; gap: var(--s-2); margin-bottom: clamp(24px, 3.5vw, 40px); }
+h2 { font-family: var(--font-display); font-size: var(--t-h2); font-weight: 700; letter-spacing: -.035em; line-height: 1.18; max-width: 24ch; text-wrap: balance; }
+.band-note { font-family: var(--font-mono); font-size: 11.5px; color: var(--c-dim); letter-spacing: .04em; }
+
+/* ---------- 功能：读数行，不做卡片网格 ---------- */
+.reads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 clamp(28px, 4vw, 56px); }
+.read {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
+  border-top: 1px solid var(--hairline);
+}
+.read:nth-child(1), .read:nth-child(2) { border-top: 0; }
+.read:last-child { grid-column: 1 / -1; }
+.read dt { font-family: var(--font-mono); font-size: 11px; color: color-mix(in oklab, var(--c-accent) 55%, var(--c-dim)); padding-top: 5px; transition: color var(--d-micro) var(--ease); }
+.read h3 { font-size: var(--t-h3); font-weight: 600; letter-spacing: -.015em; margin-bottom: 6px; }
+.read p { font-size: 14.5px; color: var(--c-muted); line-height: 1.72; }
+.read:hover dt { color: var(--c-accent); }
+
+/* ---------- 界面：标签切真截图 ---------- */
+.view { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: clamp(20px, 3vw, 40px); align-items: start; }
+.tabs { display: grid; gap: var(--s-1); }
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--r-2);
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+  color: var(--c-muted);
+  cursor: pointer;
+  transition: color var(--d-micro) var(--ease), background var(--d-micro) var(--ease), border-color var(--d-micro) var(--ease);
+}
+.tab:hover { color: var(--c-ink); background: var(--c-surface); }
+.tab[aria-selected='true'] { color: var(--c-ink); background: var(--c-raised); border-color: var(--hairline-strong); box-shadow: inset 0 1px 0 rgba(220, 228, 236, .07); }
+.tab i { width: 6px; height: 6px; border-radius: 50%; background: var(--c-dim); flex: none; }
+.tab[aria-selected='true'] i { background: var(--c-accent); }
+
+.frames { position: relative; border: 1px solid var(--hairline-strong); border-radius: var(--r-3); overflow: hidden; background: var(--c-surface); }
+.frames img { width: 100%; opacity: 0; position: absolute; inset: 0; object-fit: cover; }
+.frames img.on { position: static; opacity: 1; transition: opacity var(--d-enter) var(--ease); }
+.frames figcaption { padding: 12px 16px; border-top: 1px solid var(--hairline); font-family: var(--font-mono); font-size: 11.5px; color: var(--c-muted); }
+
+/* ---------- 下载 ---------- */
+/* ---------- 常见问题 ---------- */
+.faq { display: grid; gap: 0; border-top: 1px solid var(--hairline); }
+.faq details { border-bottom: 1px solid var(--hairline); }
+.faq summary {
+  display: flex; align-items: center; gap: var(--s-4);
+  min-height: 56px; padding: var(--s-4) 0;
+  font-size: 16.5px; font-weight: 500; cursor: pointer; list-style: none;
+  transition: color var(--d-micro) var(--ease);
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: '+'; margin-left: auto; font-family: var(--font-mono); color: var(--c-accent); font-size: 17px; }
+.faq details[open] summary::after { content: '−'; }
+.faq summary:hover { color: var(--c-accent); }
+.faq summary:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 3px; }
+.faq .ans { padding: 0 0 var(--s-5); max-width: 74ch; font-size: 15px; color: var(--c-muted); }
+.faq .ans b { color: var(--c-ink); font-weight: 500; }
+
+/* ---------- 页脚 ---------- */
+.foot { border-top: 1px solid var(--hairline); padding: clamp(32px, 5vw, 56px) 0; }
+.foot-in { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-6); align-items: baseline; justify-content: space-between; }
+.foot nav { display: flex; flex-wrap: wrap; gap: var(--s-5); }
+.foot a { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; color: var(--c-muted); text-decoration: none; }
+.foot a:hover { color: var(--c-accent); }
+.foot small { font-family: var(--font-mono); font-size: 11px; color: var(--c-dim); }
+
+/* ---------- 入场 ---------- */
+/* 入场。默认可见：脚本没跑或加载失败时内容不能是空的。 */
+.rise { opacity: 1; }
+html.js .rise { opacity: 0; transform: translate3d(-22px, 0, 0); }
+html.js .rise.in {
+  opacity: 1;
+  transform: none;
+  transition: opacity var(--d-enter) var(--ease) calc(var(--i, 0) * 70ms), transform var(--d-scroll) var(--ease) calc(var(--i, 0) * 70ms);
+}
+
+@media (max-width: 1000px) {
+  .hero-in { grid-template-columns: minmax(0, 1fr); }
+  .shots { order: -1; width: 100%; justify-self: stretch; }
+  .view { grid-template-columns: minmax(0, 1fr); }
+  .tabs { grid-auto-flow: column; grid-auto-columns: minmax(120px, 1fr); overflow-x: auto; }
+}
+@media (max-width: 760px) {
+  .reads { grid-template-columns: minmax(0, 1fr); }
+  .read:nth-child(2) { border-top: 1px solid var(--hairline); }
+  .nav { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; }
+  .rise { opacity: 1; transform: none; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="scan" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <img src="app-icon.png" alt="水月清影图标" width="26" height="26">
+      <b>水月清影</b><span>0.1.0</span>
+    </a>
+    <nav class="nav">
+      <a href="#features">功能</a>
+      <a href="#gallery">界面</a>
+      <a href="https://shuiyue.pages.dev/shuiyue-0.1.0.zip">下载</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="wrap hero-in">
+    <div>
+      <p class="kicker rise" style="--i:0">Windows 上的安卓投屏工具</p>
+      <h1 class="rise" style="--i:1">把安卓设备画面<br>投到电脑上</h1>
+      <p class="hero-sub rise" style="--i:2">掌机、手机、平板都支持，USB 或无线连接。投屏方式和画面档位在界面上选，右侧给出输出尺寸与设备负担；改过的设备参数可以还原。</p>
+      <div class="hero-act rise" style="--i:3">
+        <a class="btn btn-strong" id="dl" href="https://shuiyue.pages.dev/shuiyue-0.1.0.zip">下载 Windows 版</a>
+      </div>
+      <p class="hero-meta rise" style="--i:4"><span>免安装 <b>解压即用</b></span><span>画面 <b>只走 USB 或局域网</b></span><span>引擎 <b>scrcpy</b></span><span>系统 <b>Windows 10 / 11</b></span><span>版本 <b id="ver">0.1.0</b></span></p>
+    </div>
+
+    <div class="shots rise" style="--i:2" data-carousel aria-roledescription="轮播" aria-label="投屏效果截图">
+      <div class="shots-view">
+        <div class="shots-track">
+          <figure><img src="shots/cast-handheld.png" alt="掌机启动器界面投在电脑窗口里，画面保持方形" width="760" height="778"></figure>
+          <figure><img src="shots/cast.png" alt="全屏投屏的游戏画面，铺满整个电脑窗口" width="1280" height="720"></figure>
+        </div>
+      </div>
+      <div class="shots-bar">
+        <p class="shots-cap" data-cap>掌机界面</p>
+        <div class="shots-dots" role="tablist" aria-label="选择截图">
+          <button role="tab" aria-selected="true" aria-label="第 1 张：掌机界面" data-i="0"></button>
+          <button role="tab" aria-selected="false" aria-label="第 2 张：全屏投屏" data-i="1"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="features">
+  <div class="wrap">
+    <div class="band-h">
+      <h2>投屏、多屏和无线连接</h2>
+      <p class="band-note">所有操作都在本机完成</p>
+    </div>
+    <dl class="reads">
+      <div class="read rise" style="--i:0"><dt>01</dt><div><h3>屏幕镜像</h3><p>把设备画面直接投到窗口，兼容性最好。</p></div></div>
+      <div class="read rise" style="--i:1"><dt>02</dt><div><h3>虚拟分辨率放大</h3><p>设备按更高的分辨率重绘后再投出，不是把画面拉大。</p></div></div>
+      <div class="read rise" style="--i:2"><dt>03</dt><div><h3>虚拟屏电脑模式</h3><p>每个应用一块独立虚拟屏，在电脑上并排显示。</p></div></div>
+      <div class="read rise" style="--i:3"><dt>04</dt><div><h3>应用直达</h3><p>在程序里选中设备上的应用，直接启动到虚拟屏。</p></div></div>
+      <div class="read rise" style="--i:4"><dt>05</dt><div><h3>无线连接</h3><p>局域网内自动发现设备，首次配对后可直接连接。</p></div></div>
+    </dl>
+  </div>
+</section>
+
+<section class="band" id="gallery">
+  <div class="wrap">
+    <div class="band-h">
+      <h2>选设备和档位，右侧显示输出预览</h2>
+      <p class="band-note">界面截图</p>
+    </div>
+    <div class="view">
+      <div class="tabs" role="tablist" aria-label="界面截图">
+        <button class="tab" role="tab" aria-selected="true" data-shot="main"><i></i>投屏设置</button>
+        <button class="tab" role="tab" aria-selected="false" data-shot="vd"><i></i>虚拟屏电脑模式</button>
+        <button class="tab" role="tab" aria-selected="false" data-shot="cast"><i></i>输出预览</button>
+      </div>
+      <figure class="frames">
+        <img class="on" data-frame="main" src="shots/main.png" alt="投屏设置界面" width="1180" height="780">
+        <img data-frame="vd" src="shots/vd.png" alt="虚拟屏电脑模式界面" width="1180" height="780" loading="lazy">
+        <img data-frame="cast" src="shots/cast.png" alt="全屏投屏的画面" width="1280" height="720" loading="lazy">
+        <figcaption data-cap>选设备、选投屏方式与画面档位，右侧显示输出预览</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="faq">
+  <div class="wrap">
+    <div class="band-h">
+      <h2>常见问题</h2>
+    </div>
+    <div class="faq">
+      <details><summary>收费吗？会不会偷偷上传我的东西？</summary><p class="ans">免费，没有广告、内购和注册。画面只走 USB 线或你家的局域网，不经过任何服务器；程序里所有操作都在本机完成，只有「检查更新」会去读一次版本清单。</p></details>
+      <details><summary>为什么我的掌机投出来只有一小块，不铺满？</summary><p class="ans">掌机多是 1:1 方屏，显示器是 16:9 宽屏。按比例铺满高度就只能占屏幕宽度的一小条，<b>这是几何限制，不是软件没做好</b>。想真的变大要用「虚拟分辨率放大」，让设备重新画一张更大的图。</p></details>
+      <details><summary>「放大画面」和直接拉伸有什么区别？</summary><p class="ans">拉伸是把 720 的图硬撑大，会糊。这里的做法是先把设备的渲染分辨率调高（比如 720 → 1080），设备按新分辨率重新画一遍再投过来，字和线条是真的更细。代价是设备要多干活，发热和功耗会涨。</p></details>
+      <details><summary>改过设备分辨率，程序崩了没还原怎么办？</summary><p class="ans">进「设备与还原」页，那里有立即还原。它记着改动之前的原值；万一记录也丢了，还能强制恢复出厂值。</p></details>
+      <details><summary>无线投屏要做什么设置？</summary><p class="ans">手机上打开「开发者选项 → 无线调试」，程序里点「无线连接」，它会在局域网里找；第一次需要填一次配对码，之后打开就能直接连。手机和电脑要在同一个网络。</p></details>
+      <details><summary>它和直接用 scrcpy 命令行有什么区别？</summary><p class="ans">引擎就是 scrcpy，命令也是那些命令（界面底部会显示）。区别是它把分辨率、DPI、虚拟屏、还原这些容易改坏设备的细节托管了：先记原值、算好档位、超出标明代价，不用你记参数。</p></details>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <small>水月清影 0.1.0 · 基于 scrcpy · 画面不出本机</small>
+    <nav>
+      <a href="https://github.com/Genymobile/scrcpy">基于 scrcpy</a>
+      <a href="privacy.html">隐私说明</a>
+      <a href="terms.html">用户协议与免责声明</a>
+    </nav>
+  </div>
+</footer>
+
+</div>
+<script>
+(function () {
+  var caps = {
+    main: '选设备、选投屏方式与画面档位，右侧显示输出预览',
+    vd: '每个应用一块独立虚拟屏，各自一个窗口',
+    cast: '全屏投屏时的画面'
+  };
+
+  document.addEventListener('click', function (ev) {
+    var tab = ev.target.closest('.tab');
+    if (!tab) return;
+    var key = tab.dataset.shot;
+    [].slice.call(document.querySelectorAll('.tab')).forEach(function (t) { t.setAttribute('aria-selected', String(t === tab)); });
+    [].slice.call(document.querySelectorAll('[data-frame]')).forEach(function (img) { img.classList.toggle('on', img.dataset.frame === key); });
+    document.querySelector('[data-cap]').textContent = caps[key];
+  });
+
+  // 首屏两张投屏实拍：点指示条、拖拽、方向键都能切
+  var car = document.querySelector('[data-carousel]');
+  if (car) {
+    var track = car.querySelector('.shots-track');
+    var dots = [].slice.call(car.querySelectorAll('.shots-dots button'));
+    var capEl = car.querySelector('[data-cap]');
+    var labels = ['掌机界面', '全屏投屏'];
+    var idx = 0, drag = null;
+
+    function go(n) {
+      idx = Math.max(0, Math.min(dots.length - 1, n));
+      track.style.transform = 'translateX(' + (-idx * 100) + '%)';
+      dots.forEach(function (d, k) { d.setAttribute('aria-selected', String(k === idx)); });
+      capEl.textContent = labels[idx];
+    }
+
+    dots.forEach(function (d) { d.addEventListener('click', function () { go(+d.dataset.i); }); });
+
+    car.addEventListener('pointerdown', function (e) {
+      drag = { x: e.clientX, w: car.clientWidth, captured: false, id: e.pointerId };
+    });
+    car.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      var dx = e.clientX - drag.x;
+      // 超过阈值才接管指针。一按下就捕获会把点击算到容器上，指示条就点不动了。
+      if (!drag.captured && Math.abs(dx) > 8) {
+        try { car.setPointerCapture(drag.id); } catch (err) { /* 老浏览器忽略 */ }
+        drag.captured = true;
+        track.style.transition = 'none';
+      }
+      if (drag.captured) track.style.transform = 'translateX(calc(' + (-idx * 100) + '% + ' + dx + 'px))';
+    });
+    function endDrag(e) {
+      if (!drag) return;
+      var wasDrag = drag.captured, dx = e.clientX - drag.x, w = drag.w;
+      drag = null;
+      if (!wasDrag) return;
+      track.style.transition = '';
+      if (Math.abs(dx) > Math.max(36, w * 0.12)) go(idx + (dx < 0 ? 1 : -1));
+      else go(idx);
+    }
+    car.addEventListener('pointerup', endDrag);
+    car.addEventListener('pointercancel', endDrag);
+    car.tabIndex = 0;
+    car.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); go(idx - 1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); go(idx + 1); }
+    });
+  }
+
+  // 版本与下载地址从 update.json 读，发新版不用改页面；读不到就用页面里写好的兜底
+  fetch('update.json', { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('unavailable'); return r.json(); })
+    .then(function (u) {
+      var b = document.getElementById('dl');
+      if (b && u.url) { b.href = u.url; if (u.versionName) b.textContent = '下载 Windows 版 ' + u.versionName; }
+      var v = document.getElementById('ver');
+      if (v && u.versionName) v.textContent = u.versionName;
+    })
+    .catch(function () { /* 本地预览或清单缺失时保留静态值 */ });
+
+  if ('IntersectionObserver' in window && !new URLSearchParams(location.search).has('shot')) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { rootMargin: '0px 0px 18% 0px', threshold: 0 });
+    [].slice.call(document.querySelectorAll('.rise')).forEach(function (el) { io.observe(el); });
+    // 兜底：快速滚动或观察器漏触发时，两秒半后一律显示，内容不会卡在透明
+    setTimeout(function () {
+      [].slice.call(document.querySelectorAll('.rise:not(.in)')).forEach(function (el) { el.classList.add('in'); });
+    }, 2500);
+  } else {
+    [].slice.call(document.querySelectorAll('.rise')).forEach(function (el) { el.classList.add('in'); });
+  }
+})();
+</script>
+</body>
+</html>

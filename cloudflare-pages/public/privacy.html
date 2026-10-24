@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>隐私说明 - 水月清影</title>
+  <meta name="description" content="水月清影的隐私说明：全部处理在本机与局域网内完成，不收集个人信息，不上传设备画面。">
+  <style>
+    :root{--ink:#0f2229;--muted:#5d7480;--teal:#12707d;--line:#d5e5e8;--night:#061820}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.85;background:#fff;-webkit-font-smoothing:antialiased}
+    .bar{background:var(--night);color:#fff;padding:16px 0}.bar .shell{display:flex;align-items:center;gap:12px}.bar img{width:30px;height:30px;border-radius:8px}.bar a{color:#cfe6ea;text-decoration:none;font-size:14px}.bar b{font-size:15px;letter-spacing:.02em}
+    .shell{width:min(calc(100% - 40px),820px);margin:0 auto}
+    main{padding:44px 0 60px}h1{margin:0 0 8px;font-size:32px}.upd{margin:0 0 30px;color:var(--muted);font-size:13px}
+    h2{margin:34px 0 10px;font-size:19px;color:var(--teal)}p{margin:0 0 12px}ul{margin:0 0 14px;padding-left:20px}li{margin:0 0 7px;color:#28414a}
+    .box{padding:18px 20px;border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:10px;background:#f4fafb;font-size:14.5px;margin:22px 0}
+    footer{padding:22px 0 34px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}footer a{color:var(--teal);text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="bar"><div class="shell"><img src="app-icon.png" alt=""><b>水月清影</b><span style="flex:1"></span><a href="index.html">← 返回主页</a></div></div>
+  <main class="shell">
+    <h1>隐私说明</h1>
+    <p class="upd">最近更新：2026-10-24</p>
+
+    <div class="box">一句话：水月清影是一款本地工具。设备画面只走 USB 线或你自己的局域网，不经过任何服务器，我们也不收集个人信息。</div>
+
+    <h2>程序会处理哪些数据</h2>
+    <ul>
+      <li><b>设备画面与声音</b>：在你电脑和设备之间直接传输，只在投屏窗口里显示和本地录制时使用，不上传、不留存到任何服务器。</li>
+      <li><b>设备信息</b>：为了列出设备和计算档位，会读取设备型号、系统版本、屏幕分辨率与密度、已安装应用的包名与图标。这些只用于界面显示，保存在本机。</li>
+      <li><b>本机设置</b>：上次使用的分辨率档位、常用应用、无线连接地址、改动设备参数前的原值，保存在你当前登录用户的本地数据目录，卸载或删除即清空。</li>
+    </ul>
+
+    <h2>程序会联网做什么</h2>
+    <ul>
+      <li><b>局域网通信</b>：走无线投屏时，程序会在你的局域网内发现和连接设备，不会把数据发到公网。</li>
+      <li><b>检查更新</b>：只有你主动点击「关于 → 检查更新」时，才会去读一次版本清单文件（一个公开的 JSON）。这次请求不携带你的设备信息、账号或任何标识。</li>
+      <li>除此之外程序不做后台联网，没有统计上报、没有广告、没有崩溃收集。</li>
+    </ul>
+
+    <h2>我们不会做的事</h2>
+    <ul>
+      <li>不收集、不传输你的设备画面、文件内容、通讯录、位置或账号信息。</li>
+      <li>不需要注册，不内置任何账号体系，也没有遥测。</li>
+      <li>不捆绑其它软件，不修改浏览器设置。</li>
+    </ul>
+
+    <h2>第三方组件</h2>
+    <p>本工具基于开源项目 <a href="https://github.com/Genymobile/scrcpy" style="color:var(--teal)">scrcpy</a> 与 Android Debug Bridge（ADB）构建，界面渲染使用 Microsoft Edge WebView2 运行库。这些组件按其各自的授权条款分发，其行为不受本项目控制；它们的官方说明可作为参考。</p>
+
+    <h2>数据保存位置</h2>
+    <p>本机路径：<code>%LOCALAPPDATA%\水月清影\</code>。里面只有设置文件与排障日志，删除该目录即可彻底清除程序留在本机的全部数据。</p>
+
+    <h2>未成年的使用</h2>
+    <p>本工具面向成人日常使用。未成年人请在监护人知情并同意的前提下使用。</p>
+
+    <h2>说明的更新</h2>
+    <p>如果程序的联网行为发生变化，我们会先更新本页并标注日期，再发布对应版本。</p>
+  </main>
+  <footer><div class="shell">© 水月清影 · <a href="privacy.html">隐私说明</a> · <a href="terms.html">用户协议与免责声明</a></div></footer>
+</body>
+</html>

@@ -1,0 +1,3 @@
+name = "shuiyue"
+pages_build_output_dir = "cloudflare-pages/public"
+compatibility_date = "2026-10-24"
