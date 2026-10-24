@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -18,9 +19,35 @@ static class Program
     [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     static extern int SetCurrentProcessExplicitAppUserModelID(string AppID);
 
+    static Mutex InstanceLock;
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
     [STAThread]
     static void Main()
     {
+        bool created;
+        InstanceLock = new Mutex(true, "Shuiyue.ScreenZoom.Instance", out created);
+        if (!created)
+        {
+            // 已有实例在跑：把它叫到前台，本进程直接退出。
+            // 两份实例各自会应用设备分辨率，一次配置变更就能把另一份的投屏打掉。
+            try
+            {
+                int me = Process.GetCurrentProcess().Id;
+                foreach (var p in Process.GetProcessesByName(Process.GetCurrentProcess().ProcessName))
+                {
+                    if (p.Id == me) continue;
+                    var h = p.MainWindowHandle;
+                    if (h == IntPtr.Zero) continue;
+                    ShowWindow(h, 9);              // SW_RESTORE
+                    SetForegroundWindow(h);
+                    break;
+                }
+            }
+            catch { }
+            return;
+        }
         try { SetCurrentProcessExplicitAppUserModelID("Shuiyue.ScreenZoom"); } catch { }
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -536,8 +563,34 @@ public class MainForm : Form
             };
             var pr = Process.Start(psi);
             int n = 0;
-            pr.OutputDataReceived += (s, e) => { if (e.Data != null && n++ < 40) Log("[scrcpy] " + e.Data); };
-            pr.ErrorDataReceived += (s, e) => { if (e.Data != null && n++ < 40) Log("[scrcpy] " + e.Data); };
+            // 开头 40 行走日志；同时留一份环形缓冲，退出时把最后几行打出来——
+            // 断连原因通常只在最后几行，不留在缓冲里就查不到
+            var tail = new Queue<string>(40);
+            var gate = new object();
+            Action<string> take = line =>
+            {
+                if (line == null) return;
+                lock (gate)
+                {
+                    tail.Enqueue(line);
+                    while (tail.Count > 40) tail.Dequeue();
+                    if (n < 40) { n++; Log("[scrcpy] " + line); }
+                }
+            };
+            pr.OutputDataReceived += (s, e) => take(e.Data);
+            pr.ErrorDataReceived += (s, e) => take(e.Data);
+            pr.EnableRaisingEvents = true;
+            pr.Exited += async (s, e) =>
+            {
+                await Task.Delay(400);   // 等管道读干净再取最后几行
+                int code = -1;
+                try { code = pr.ExitCode; } catch { }
+                string[] last;
+                lock (gate) { last = tail.ToArray(); }
+                Log("scrcpy 退出 code=" + code);
+                int from = Math.Max(0, last.Length - 12);
+                for (int i = from; i < last.Length; i++) Log("  | " + last[i]);
+            };
             pr.BeginOutputReadLine();
             pr.BeginErrorReadLine();
             return new Dictionary<string, object> { { "ok", true }, { "cmd", "scrcpy " + string.Join(" ", a) } };
