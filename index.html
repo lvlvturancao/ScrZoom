@@ -509,17 +509,19 @@ function renderDevs() {
       ? `${d.currentDpi}dpi · 物理 ${d.physicalDpi}` : `${d.currentDpi || d.physicalDpi || '?'}dpi`;
     const viaTxt = d.via === 'usb' ? '有线' : '无线';
     const addrRow = d.via === 'wireless' ? `<div class="mt addr">${esc(d.id)}</div>` : '';
+    const disBtn = d.via === 'wireless' ? `<button class="b2" data-dis="${esc(d.id)}" title="断开无线连接">断开</button>` : '';
     return `<div class="row ${d.id === devId ? 'on' : ''}" data-id="${esc(d.id)}">
       <span class="ic">${d.via === 'usb' ? '🔌' : '📶'}</span>
       <div><div class="nm">${esc(d.name || d.model || d.id)}</div>
       <div class="mt">${esc(sizeTxt)} · Android ${esc(d.android || '?')} · ${esc(dpiTxt)}</div>${addrRow}</div>
       <span class="sp"></span>
-      <span class="tag ok">已连接 · ${viaTxt}</span>
+      <span class="tag ok">已连接 · ${viaTxt}</span>${disBtn}
       <span class="check"></span></div>`;
   }).join('') : (devTab === 'wifi'
     ? '<div class="empty">没有已连接无线设备。用上方「扫描局域网」发现并连接。</div>'
     : '<div class="empty">没有已连接 USB 设备。插上数据线并打开 USB 调试后点「重新扫描」。</div>');
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => { devId = r.dataset.id; tier = 0; renderAll(); });
+  [].forEach.call($('devs').querySelectorAll('button[data-dis]'), b => b.onclick = (e) => { e.stopPropagation(); wifiDisconnect(b.dataset.dis); });
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
 function renderSeg() {
@@ -764,42 +766,41 @@ async function discoverOnce() {
   try {
     const found = await api.discover();
     wifiFound = Array.isArray(found) ? found : [];
-    if (!wifiFound.length) {
-      msg.textContent = '没扫到无线调试广播。确认手机上那个开关是开着的、屏幕没锁，或用手动输入。';
-      msg.innerHTML = '没扫到无线调试广播。确认手机上开关开着、屏幕没锁，或用手动输入。<button class="b2" id="btnAdbRestart" style="margin-left:8px;padding:2px 9px">重启 adb 服务再扫</button>';
+    const newOnes = wifiFound.filter(f => !f.connected); // 已连接的由设备列表展示
+    if (!newOnes.length) {
+      msg.textContent = wifiFound.length ? '没有未连接的新设备，已连接设备看下方列表。' : '没扫到无线调试广播。确认手机上那个开关是开着的、屏幕没锁，或用手动输入。';
+      if (!wifiFound.length) {
+        msg.innerHTML = '没扫到无线调试广播。确认手机上开关开着、屏幕没锁，或用手动输入。<button class="b2" id="btnAdbRestart" style="margin-left:8px;padding:2px 9px">重启 adb 服务再扫</button>';
+        const br = $('btnAdbRestart');
+        if (br) br.onclick = async () => {
+          br.disabled = true;
+          const r = await api.restartAdb();
+          toast((r && r.ok ? 'adb 服务已重启，正在重新扫描（已断开设备需重连）' : ('重启失败：' + ((r && r.text) || ''))), !(r && r.ok));
+          await discoverOnce();
+          br.disabled = false;
+        };
+      }
       $('wifiDevs').innerHTML = '';
-      const br = $('btnAdbRestart');
-      if (br) br.onclick = async () => {
-        br.disabled = true;
-        const r = await api.restartAdb();
-        toast((r && r.ok ? 'adb 服务已重启，正在重新扫描（已断开设备需重连）' : ('重启失败：' + ((r && r.text) || ''))), !(r && r.ok));
-        await discoverOnce();
-        br.disabled = false;
-      };
       return;
     }
-    msg.textContent = '发现 ' + wifiFound.length + ' 台设备，点右侧按钮直连或断开。';
+    msg.textContent = '发现 ' + newOnes.length + ' 台可连接设备，点右侧按钮直连。';
     renderWifiDevs();
   } catch (e) {
     msg.textContent = '发现过程出错：' + e.message;
   }
 }
 function renderWifiDevs() {
-  $('wifiDevs').innerHTML = wifiFound.map(f => {
-    const nm = esc(f.name || f.addr);
-    const tag = f.connected ? '<span class="tag ok">已连接</span>'
-      : (f.kind === 'connect' ? '<span class="tag">可直连</span>' : '<span class="tag no">需配对</span>');
-    const btn = f.connected
-      ? `<button class="b2" data-act="dis" data-addr="${esc(f.addr)}">断开</button>`
-      : `<button class="b2" data-act="con" data-addr="${esc(f.addr)}" data-kind="${esc(f.kind)}">连接</button>`;
+  // 已连接设备由下方「已连接设备」列表展示，这里只列未连接的可直连/需配对设备
+  const list = wifiFound.filter(f => !f.connected);
+  $('wifiDevs').innerHTML = list.map(f => {
+    const nm = esc(f.addr); // 未连接设备没有可查的设备名，直接显示 IP:端口
+    const tag = (f.kind === 'connect' ? '<span class="tag">可直连</span>' : '<span class="tag no">需配对</span>');
+    const btn = `<button class="b2" data-act="con" data-addr="${esc(f.addr)}" data-kind="${esc(f.kind)}">连接</button>`;
     return `<div class="row"><span class="ic">📶</span>
-      <div><div class="nm">${nm}</div><div class="mt">${esc(f.addr)}</div></div>
+      <div><div class="nm">${nm}</div></div>
       <span class="sp"></span>${tag}${btn}</div>`;
   }).join('');
-  [].forEach.call($('wifiDevs').querySelectorAll('button'), b => b.onclick = () => {
-    if (b.dataset.act === 'dis') wifiDisconnect(b.dataset.addr);
-    else wifiQuickConnect(b.dataset.addr, b.dataset.kind);
-  });
+  [].forEach.call($('wifiDevs').querySelectorAll('button'), b => b.onclick = () => wifiQuickConnect(b.dataset.addr, b.dataset.kind));
 }
 async function wifiQuickConnect(addr, kind) {
   const [ip, port] = addr.split(':');
