@@ -329,6 +329,8 @@ h2 { font-family: var(--font-display); font-size: var(--t-h2); font-weight: 700;
 .foot a { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; color: var(--c-muted); text-decoration: none; }
 .foot a:hover { color: var(--c-accent); }
 .foot small { font-family: var(--font-mono); font-size: 11px; color: var(--c-dim); }
+.foot .quiet-stats { flex-basis: 100%; font-family: var(--font-mono); font-size: 11px; color: var(--c-dim); letter-spacing: .04em; }
+.foot .quiet-stats[hidden] { display: none; }
 
 /* ---------- 入场 ---------- */
 /* 入场。默认可见：脚本没跑或加载失败时内容不能是空的。 */
@@ -470,6 +472,7 @@ html.js .rise.in {
       <a href="privacy.html">隐私说明</a>
       <a href="terms.html">用户协议与免责声明</a>
     </nav>
+    <span class="quiet-stats" id="quietStats" hidden></span>
   </div>
 </footer>
 
@@ -557,6 +560,20 @@ html.js .rise.in {
       });
     })
     .catch(function () { /* 本地预览或清单缺失时保留静态值 */ });
+
+  // 访问与下载统计：由 _worker.js 写入 KV，读不到就保持隐藏
+  fetch('api/stats', { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('unavailable'); return r.json(); })
+    .then(function (st) {
+      if (!st.available) return;
+      var el = document.getElementById('quietStats');
+      if (!el) return;
+      var f = function (n) { return Number(n || 0).toLocaleString(); };
+      el.textContent = '累计访问 ' + f(st.pageViewsTotal) + ' · 今日访问 ' + f(st.pageViewsToday) +
+                       '　|　累计下载 ' + f(st.downloadsTotal) + ' · 今日下载 ' + f(st.downloadsToday);
+      el.hidden = false;
+    })
+    .catch(function () { /* 统计不可用时保持隐藏 */ });
 
   if ('IntersectionObserver' in window && !new URLSearchParams(location.search).has('shot')) {
     var io = new IntersectionObserver(function (es) {

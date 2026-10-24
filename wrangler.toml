@@ -1,3 +1,7 @@
 name = "shuiyue"
 pages_build_output_dir = "cloudflare-pages/public"
-compatibility_date = "2026-10-24"
+compatibility_date = "2026-06-23"
+
+[[kv_namespaces]]
+binding = "SHUIYUE_STATS_KV"
+id = "0ad9b3ad302c4a639fe082ef25b3229a"
