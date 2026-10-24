@@ -239,7 +239,7 @@ h1 em { font-style: normal; color: var(--c-accent); }
 }
 .monitor-screen img { display: block; }
 .shot-native .monitor-screen img { width: 37.5%; height: 66.67%; object-fit: fill; box-shadow: 0 12px 30px -16px #000; }
-.shot-full .monitor-screen img { width: 100%; height: 100%; object-fit: cover; }
+.shot-full .monitor-screen img { width: 100%; height: 100%; object-fit: contain; }
 .monitor-neck { width: 58px; height: 13px; margin: 0 auto; background: linear-gradient(180deg, #3A4B5A, #232E38); }
 .monitor-base { width: 132px; height: 7px; margin: 0 auto; border-radius: 0 0 4px 4px; background: linear-gradient(180deg, #3A4B5A, #2A3742); box-shadow: 0 10px 18px -12px #000; }
 .shot-meta b { display: block; font-family: var(--font-mono); font-size: 12.5px; color: var(--c-ink); letter-spacing: .04em; }
@@ -436,15 +436,15 @@ html.js .rise.in {
           <figure class="shot-full">
             <div class="monitor">
               <div class="monitor-screen">
-                <img src="shots/cast.png" alt="同一台掌机全屏放大投屏，画面铺满 1080p 显示器" width="1280" height="720">
+                <img src="shots/cast.png" alt="RG Rotate 掌机经虚拟分辨率放大后投满 1080p 显示器，画面清晰" width="1280" height="720">
               </div>
               <div class="monitor-neck"></div>
               <div class="monitor-base"></div>
             </div>
             <figcaption class="shot-meta">
-              <b>全屏显示</b>
-              <span>屏幕镜像 · RG Rotate 掌机 · 720×720</span>
-              <p>画面铺满显示器。设备仍是 720×720，放大在电脑端完成，画面会软一些；要更清晰就选虚拟分辨率放大。</p>
+              <b>虚拟分辨率放大</b>
+              <span>RG Rotate 掌机 · 投满 1920×1080</span>
+              <p>设备先按更高分辨率重新渲染，再全屏投出来，铺满显示器。字和线条是真重画的，不是把 720 拉大。</p>
             </figcaption>
           </figure>
         </div>
@@ -453,7 +453,7 @@ html.js .rise.in {
         <p class="shots-cap" data-cap>原始分辨率 · 720×720</p>
         <div class="shots-dots" role="tablist" aria-label="选择截图">
           <button role="tab" aria-selected="true" aria-label="第 1 张：原始分辨率" data-i="0"></button>
-          <button role="tab" aria-selected="false" aria-label="第 2 张：全屏显示" data-i="1"></button>
+          <button role="tab" aria-selected="false" aria-label="第 2 张：虚拟分辨率放大" data-i="1"></button>
         </div>
       </div>
     </div>
@@ -550,7 +550,7 @@ html.js .rise.in {
     var track = car.querySelector('.shots-track');
     var dots = [].slice.call(car.querySelectorAll('.shots-dots button'));
     var capEl = car.querySelector('[data-cap]');
-    var labels = ['原始分辨率 · 720×720', '全屏显示 · 720×720'];
+    var labels = ['原始分辨率 · 720×720', '虚拟分辨率放大 · 投满 1920×1080'];
     var idx = 0, drag = null;
 
     function go(n) {
