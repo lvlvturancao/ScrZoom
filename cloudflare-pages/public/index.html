@@ -227,19 +227,19 @@ h1 em { font-style: normal; color: var(--c-accent); }
 .monitor-screen {
   position: relative;
   aspect-ratio: 16 / 9;
-  border: 8px solid #151d25;
-  border-radius: 10px;
-  background: #04070a;
+  border: 9px solid #2E3D4C;
+  border-radius: 12px;
+  background: #000;
   overflow: hidden;
   display: grid;
   place-items: center;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .05), 0 18px 38px -26px #000;
+  box-shadow: 0 0 0 1px rgba(159, 179, 196, .22), inset 0 1px 0 rgba(255, 255, 255, .10), 0 26px 50px -30px #000;
 }
 .monitor-screen img { display: block; }
-.shot-native .monitor-screen img { height: 66.6%; width: auto; box-shadow: 0 10px 28px -14px #000; }
+.shot-native .monitor-screen img { width: 37.5%; height: 66.67%; object-fit: fill; box-shadow: 0 12px 30px -16px #000; }
 .shot-full .monitor-screen img { width: 100%; height: 100%; object-fit: cover; }
-.monitor-neck { width: 58px; height: 13px; margin: 0 auto; background: linear-gradient(180deg, #26313c, #151c23); }
-.monitor-base { width: 132px; height: 6px; margin: 0 auto; border-radius: 0 0 4px 4px; background: #26313c; }
+.monitor-neck { width: 58px; height: 13px; margin: 0 auto; background: linear-gradient(180deg, #3A4B5A, #232E38); }
+.monitor-base { width: 132px; height: 7px; margin: 0 auto; border-radius: 0 0 4px 4px; background: linear-gradient(180deg, #3A4B5A, #2A3742); box-shadow: 0 10px 18px -12px #000; }
 .shot-meta b { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--c-ink); letter-spacing: .04em; }
 .shot-meta span { display: block; margin-top: 3px; font-family: var(--font-mono); font-size: 11px; color: var(--c-accent); letter-spacing: .03em; }
 .shot-meta p { margin: 6px 0 0; font-size: 12px; line-height: 1.65; color: var(--c-muted); }
@@ -420,7 +420,7 @@ html.js .rise.in {
           <figure class="shot-native">
             <div class="monitor">
               <div class="monitor-screen">
-                <img src="shots/cast-handheld.png" alt="RG Rotate 掌机以 720×720 原始分辨率投在电脑窗口里，在 1080p 显示器上只占中间一块" width="760" height="778">
+                <img src="shots/cast-native.png" alt="RG Rotate 掌机以 720×720 原始分辨率投在电脑屏幕上，只占中间一块方形区域" width="720" height="720">
               </div>
               <div class="monitor-neck"></div>
               <div class="monitor-base"></div>
