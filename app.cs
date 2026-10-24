@@ -42,6 +42,7 @@ public class MainForm : Form
         MinimumSize = new Size(1020, 640);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(246, 247, 248);
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
         engineDir = FindEngine();
         if (engineDir != null) { scrcpyExe = Path.Combine(engineDir, "scrcpy.exe"); adbExe = Path.Combine(engineDir, "adb.exe"); }
