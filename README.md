@@ -25,17 +25,21 @@
 
 ### 直接使用（推荐）
 
-1. 从 [scrcpy 官方](https://github.com/Genymobile/scrcpy/releases) 下载 **Windows 版 scrcpy**，解压后将整个目录重命名为 `engine`，放到本程序旁边（或程序上一级目录下，工具会自动发现）
-2. 安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Win10/11 一般自带）
-3. 启动 `水月清影.exe`
+1. 下载发布页的 `shuiyue-x.y.z.zip`，解压到任意目录（路径里有中文也可以）
+2. 双击 `水月清影.exe`
 
-目录结构示意：
+压缩包里已经带好投屏引擎（scrcpy 与 adb），不用另外下载或安装任何东西，也不用装驱动。
+
+界面依赖微软的 WebView2 组件：Windows 11 自带；Windows 10 多数已随 Edge 装过。确实缺失时程序会直接说明并给出官方下载入口，装一次即可。
+
+目录结构：
 
 ```
 你的目录/
 ├── 水月清影.exe
 ├── index.html
-└── engine/            # scrcpy 解压目录（含 scrcpy.exe / adb.exe）
+├── engine/            # 投屏引擎，随包提供
+└── *.dll              # WebView2 组件库，随包提供
 ```
 
 ### 自己构建

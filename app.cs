@@ -104,17 +104,54 @@ public class MainForm : Form
     async Task Init()
     {
         Directory.CreateDirectory(DataDir);
-        var env = await CoreWebView2Environment.CreateAsync(null, DataDir, null);
-        await wv.EnsureCoreWebView2Async(env);
-        wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
-        wv.CoreWebView2.Settings.IsStatusBarEnabled = false;
-        wv.CoreWebView2.WebMessageReceived += OnMessage;
-        wv.CoreWebView2.Navigate(new Uri(Path.Combine(AppDir(), "index.html")).AbsoluteUri);
+        try
+        {
+            var env = await CoreWebView2Environment.CreateAsync(null, DataDir, null);
+            await wv.EnsureCoreWebView2Async(env);
+            wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            wv.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            wv.CoreWebView2.WebMessageReceived += OnMessage;
+            wv.CoreWebView2.Navigate(new Uri(Path.Combine(AppDir(), "index.html")).AbsoluteUri);
+        }
+        catch (Exception ex)
+        {
+            Log("界面初始化失败: " + ex.Message);
+            if (IsWebView2Missing(ex)) ShowWebView2Missing();
+            else MessageBox.Show("界面初始化失败：\n\n" + ex.Message, "水月清影", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    // 缺组件时别只留一个白窗口：说清是什么、去哪装
+    static bool IsWebView2Missing(Exception ex)
+    {
+        string name = ex.GetType().Name ?? "";
+        string msg = (ex.Message ?? "") + " " + (ex.InnerException != null ? ex.InnerException.Message : "");
+        if (name.IndexOf("WebView2RuntimeNot", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        bool mentions = msg.IndexOf("WebView2", StringComparison.OrdinalIgnoreCase) >= 0;
+        bool missing = msg.IndexOf("not installed", StringComparison.OrdinalIgnoreCase) >= 0
+                    || msg.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0
+                    || msg.IndexOf("未安装", StringComparison.OrdinalIgnoreCase) >= 0
+                    || msg.IndexOf("找不到", StringComparison.OrdinalIgnoreCase) >= 0;
+        return mentions && missing;
+    }
+
+    void ShowWebView2Missing()
+    {
+        var r = MessageBox.Show(
+            "这台电脑缺少微软的 WebView2 组件，程序的界面需要它才能显示。\n\n" +
+            "Windows 11 自带；Windows 10 多数已随 Edge 装过。\n" +
+            "点「是」打开微软官方下载页，装一次以后就不用管了。",
+            "水月清影 · 缺少界面组件", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (r == DialogResult.Yes)
+        {
+            try { Process.Start("https://developer.microsoft.com/microsoft-edge/webview2/"); } catch { }
+        }
+        Close();
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.1.0";
-    public const int AppVersionCode = 1;
+    public const string AppVersion = "0.1.1";
+    public const int AppVersionCode = 2;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
