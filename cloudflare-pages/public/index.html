@@ -300,7 +300,7 @@ h2 { font-family: var(--font-display); font-size: var(--t-h2); font-weight: 700;
 .tab[aria-selected='true'] i { background: var(--c-accent); }
 
 .frames { position: relative; border: 1px solid var(--hairline-strong); border-radius: var(--r-3); overflow: hidden; background: var(--c-surface); }
-.frames img { width: 100%; opacity: 0; position: absolute; inset: 0; object-fit: cover; }
+.frames img { width: 100%; height: auto; opacity: 0; position: absolute; inset: 0; object-fit: contain; }
 .frames img.on { position: static; opacity: 1; transition: opacity var(--d-enter) var(--ease); }
 .frames figcaption { padding: 12px 16px; border-top: 1px solid var(--hairline); font-family: var(--font-mono); font-size: 11.5px; color: var(--c-muted); }
 
@@ -372,7 +372,7 @@ html.js .rise.in {
     <nav class="nav">
       <a href="#features">功能</a>
       <a href="#gallery">界面</a>
-      <a href="https://shuiyue.pages.dev/shuiyue-0.1.0.zip">下载</a>
+      <a href="shuiyue-0.1.0.zip">下载</a>
       <a href="#faq">常见问题</a>
     </nav>
   </div>
@@ -385,7 +385,7 @@ html.js .rise.in {
       <h1 class="rise" style="--i:1">把安卓设备画面<br>投到电脑上</h1>
       <p class="hero-sub rise" style="--i:2">掌机、手机、平板都支持，USB 或无线连接。投屏方式和画面档位在界面上选，右侧给出输出尺寸与设备负担；改过的设备参数可以还原。</p>
       <div class="hero-act rise" style="--i:3">
-        <a class="btn btn-strong" id="dl" href="https://shuiyue.pages.dev/shuiyue-0.1.0.zip">下载 Windows 版</a>
+        <a class="btn btn-strong" id="dl" href="shuiyue-0.1.0.zip">下载 Windows 版</a>
       </div>
       <p class="hero-meta rise" style="--i:4"><span>免安装 <b>解压即用</b></span><span>画面 <b>只走 USB 或局域网</b></span><span>引擎 <b>scrcpy</b></span><span>系统 <b>Windows 10 / 11</b></span><span>版本 <b id="ver">0.1.0</b></span></p>
     </div>
