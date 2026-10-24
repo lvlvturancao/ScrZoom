@@ -251,6 +251,14 @@ public class MainForm : Form
         return "\"" + s.Replace("\"", "\\\"") + "\"";
     }
 
+    static int RotVal(string t)
+    {
+        // mCurrentOrientation: 0=竖屏 1=横屏(90°) 2=倒竖 3=横屏(270°)；读不到按竖屏
+        var m = System.Text.RegularExpressions.Regex.Match(t ?? "", "mCurrentOrientation=(\\d)");
+        int v;
+        return m.Success && int.TryParse(m.Groups[1].Value, out v) ? v : 0;
+    }
+
     async Task<object> Scan()
     {
         if (adbExe == null) return Err("没找到 scrcpy 目录，请把程序放在 scrcpy 旁边");
@@ -272,13 +280,15 @@ public class MainForm : Form
             var tModel = Adb(id, "shell", "getprop", "ro.product.model");
             var tRel = Adb(id, "shell", "getprop", "ro.build.version.release");
             var tWm = ReadWm(id);
-            await Task.WhenAll(tModel, tRel, tWm);
-            var m = await tModel; var v = await tRel; var wm = await tWm;
+            var tRot = Adb(id, "shell", "dumpsys display | grep mCurrentOrientation");
+            await Task.WhenAll(tModel, tRel, tWm, tRot);
+            var m = await tModel; var v = await tRel; var wm = await tWm; var rot = await tRot;
             var d = new Dictionary<string, object> {
                 { "id", id },
                 { "name", Clean(m.text).Length > 0 ? Clean(m.text) : name },
                 { "android", Clean(v.text) },
-                { "via", id.Contains(":") ? "wireless" : "usb" }
+                { "via", id.Contains(":") ? "wireless" : "usb" },
+                { "rot", RotVal(rot.text) }
             };
             foreach (var kv in wm) d[kv.Key] = kv.Value;
             Log("device " + id + " " + d["name"] + " " + d["currentSize"]);

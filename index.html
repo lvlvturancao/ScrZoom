@@ -81,6 +81,7 @@ button,select,input{font:inherit;color:inherit}
 .pill.hi{background:var(--warn-soft);color:var(--warn);border-color:#f0dfc4}
 .pill.no{background:var(--bad-soft);color:var(--bad);border-color:#f2d5d3}
 .tier.dim{opacity:.45}
+.tier.off{opacity:.45;cursor:not-allowed}
 
 .disc{border-top:1px solid var(--line);padding-top:11px}
 .disc>summary{list-style:none;cursor:pointer;font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:7px}
@@ -232,7 +233,7 @@ button,select,input{font:inherit;color:inherit}
           <div class="desc" id="segDesc"></div>
         </div>
         <div class="sec">
-          <div class="h"><b>画面档位</b><span>右侧按真实分辨率计算</span></div>
+          <div class="h"><b>画面档位</b><span>右侧按真实分辨率计算 · 放大不超过显示器尺寸，超出只增负担</span></div>
           <div class="rows" id="tiers"></div>
         </div>
         <details class="disc">
@@ -442,23 +443,33 @@ function tiersFor(d) {
     return out;
   }
   if (mode === 'scale') {
+    // 设备横屏（rot 1/3）时按横屏方向放大：重绘基准宽高互换，窗口预览与上限判断都跟随
+    const land = (d.rot === 1 || d.rot === 3);
+    const bw = land ? ph : pw, bh = land ? pw : ph;
     const mk = (nm, k, extra) => {
-      const w = Math.round(pw * k), h = Math.round(ph * k);
+      const w = Math.round(bw * k), h = Math.round(bh * k);
       const s = showW(w, h);
-      return Object.assign({ nm, ds: '像素量 ' + (k * k).toFixed(2) + ' 倍', size: s, px: k * k,
-        cost: k <= 1 ? '无增加' : k < 1.8 ? '中等负载' : '高负载', cls: k <= 1 ? '' : k < 1.8 ? 'hi' : 'no',
+      // 重绘分辨率已覆盖显示器（宽高都不小于显示器）→ 窗口不会再变大，继续放大纯浪费
+      const over = w >= mon.w && h >= mon.h;
+      return Object.assign({ nm,
+        ds: over ? '已达显示器上限 ' + mon.w + '×' + mon.h : '像素量 ' + (k * k).toFixed(2) + ' 倍',
+        size: s, px: k * k,
+        cost: over ? '不再增加' : (k <= 1 ? '无增加' : k < 1.8 ? '中等负载' : '高负载'),
+        cls: over ? '' : (k <= 1 ? '' : k < 1.8 ? 'hi' : 'no'),
+        off: over,
+        tip: over ? `重绘 ${w}×${h} 已超过显示器 ${mon.w}×${mon.h}，窗口不会更大，再放大只增加设备负担，已停用。` : undefined,
         run: () => api.launchScaled({ id: d.id, kind: 'factor', factor: k, monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
         cmd: 'wm size ' + w + 'x' + h + ' · wm density ' + Math.round(dpi * k) }, extra || {});
     };
     out.push(mk('1.0× 重绘', 1));
     out.push(mk('1.5× 重绘', 1.5));
     out.push(mk('2.0× 重绘', 2));
-    const kFit = Math.min(mon.w / pw, mon.h / ph);
-    out.push({ nm: '等比最大化', ds: '保持设备比例放大到显示器边界，不变形', size: showW(Math.round(pw * kFit), Math.round(ph * kFit)),
+    const kFit = Math.min(mon.w / bw, mon.h / bh);
+    out.push({ nm: '等比最大化', ds: '保持设备比例放大到显示器边界，不变形', size: showW(Math.round(bw * kFit), Math.round(bh * kFit)),
       px: kFit * kFit, cost: kFit <= 1 ? '无增加' : '中等负载', cls: kFit <= 1 ? '' : 'hi',
       tip: `取宽、高两个方向较小的比值 ${kFit.toFixed(2)}，保证不变形又能撑到屏幕边界。换更大显示器会自动提高。`,
       run: () => api.launchScaled({ id: d.id, kind: 'fit', monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
-      cmd: 'wm size ' + Math.round(pw * kFit) + 'x' + Math.round(ph * kFit) });
+      cmd: 'wm size ' + Math.round(bw * kFit) + 'x' + Math.round(bh * kFit) });
     const fillPx = (mon.w * mon.h) / (pw * ph);
     out.push({ nm: '满屏填充', ds: '把设备分辨率改成显示器分辨率，画面铺满无黑边', size: [mon.w, mon.h], px: fillPx,
       cost: fillPx > 1.6 ? '高负载' : '略降', cls: fillPx > 1.6 ? 'hi' : '',
@@ -477,7 +488,7 @@ function tiersFor(d) {
 function at() { const l = tiersFor(cur()); if (tier >= l.length) tier = 0; return l[tier]; }
 function modeDesc() {
   return { mirror: '设备屏幕原样投出，一个窗口。兼容性最好，所有设备都支持。',
-    scale: '让设备以更高分辨率重绘画面，同样窗口里更清晰，代价是设备负载明显增加。',
+    scale: '让设备以更高分辨率重绘画面，同样窗口里更清晰，代价是设备负载明显增加。设备横屏时自动按横屏方向放大。',
     multi: '每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排显示多个应用。' }[mode];
 }
 
@@ -522,13 +533,13 @@ function renderSeg() {
 function renderTiers() {
   const l = tiersFor(cur());
   $('tiers').innerHTML = l.length ? l.map((t, i) =>
-    `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''}" data-i="${i}">
+    `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''} ${t.off ? 'off' : ''}" data-i="${i}"${t.off ? ' data-off="1"' : ''}>
       <span class="rd"></span><div><div class="nm">${esc(t.nm)}</div><div class="mt">${esc(t.ds)}</div></div>
       <span class="sp"></span><span class="size">${t.size[0]}×${t.size[1]}</span>
       <span class="pill ${t.cls}">${esc(t.cost)}</span>
       ${t.tip ? '<span class="tip">?<span class="bub">' + t.tip + '</span></span>' : ''}</div>`).join('')
     : '<div class="empty">先选一台设备。</div>';
-  [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { tier = +x.dataset.i; renderAll(); });
+  [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { if (x.dataset.off === '1') return; tier = +x.dataset.i; renderAll(); });
 }
 function renderOut() {
   const t = at(), live = !!(t && t.size && t.size[0]);
