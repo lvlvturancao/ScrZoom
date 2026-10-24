@@ -33,6 +33,7 @@ public class MainForm : Form
     string RecentFile { get { return Path.Combine(DataDir, "recent-apps.json"); } }
     string TemplatesFile { get { return Path.Combine(DataDir, "vd-templates.json"); } }
     string AppsCacheFile { get { return Path.Combine(DataDir, "apps-cache.json"); } }
+    string LastDevFile { get { return Path.Combine(DataDir, "last-device.json"); } }
 
     public MainForm()
     {
@@ -165,6 +166,7 @@ public class MainForm : Form
             case "wifi-disconnect": return await WifiDisconnect(p);
             case "wifi-connect": return await WifiConnect(p);
             case "wifi-restart-adb": return await RestartAdb();
+            case "reconnect-last": return await ReconnectLast();
         }
         return Err("未知操作 " + action);
     }
@@ -601,6 +603,30 @@ public class MainForm : Form
         return new Dictionary<string, object> { { "ok", s.ok }, { "text", s.ok ? "ok" : s.text } };
     }
 
+    // 自动重连上次用过的设备：只重连已配对过的直连地址，不打扰其它设备
+    async Task<object> ReconnectLast()
+    {
+        if (adbExe == null) return Err("没找到 adb");
+        string addr = LoadLastDevice();
+        if (string.IsNullOrEmpty(addr))
+            return new Dictionary<string, object> { { "ok", false }, { "text", "没有记录上次设备" }, { "addr", "" } };
+        var r = await Run(adbExe, new[] { "connect", addr }, 8000);
+        bool ok = r.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
+                  && r.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0;
+        return new Dictionary<string, object> { { "ok", ok }, { "text", r.text.Trim() }, { "addr", addr } };
+    }
+
+    string LoadLastDevice()
+    {
+        var j = ReadJson(LastDevFile) as Dictionary<string, object>;
+        return j != null && j.ContainsKey("addr") ? Convert.ToString(j["addr"]) ?? "" : "";
+    }
+
+    void SaveLastDevice(string addr)
+    {
+        WriteJson(LastDevFile, new Dictionary<string, object> { { "addr", addr ?? "" } });
+    }
+
     async Task<object> WifiDisconnect(Dictionary<string, object> p)
     {
         string addr = Ps(p, "addr").Trim();
@@ -609,6 +635,7 @@ public class MainForm : Form
         var r = await Run(adbExe, a, 10000);
         string t = r.text.Trim();
         bool ok = t.IndexOf("disconnected", StringComparison.OrdinalIgnoreCase) >= 0 || (r.ok && t.Length == 0);
+        if (ok) SaveLastDevice(""); // 用户主动断开 = 不想自动连，清空记录
         return new Dictionary<string, object> { { "ok", ok }, { "text", t.Length > 0 ? t : (addr.Length > 0 ? "已断开 " + addr : "已断开全部无线连接") } };
     }
 
@@ -675,6 +702,7 @@ public class MainForm : Form
         }
         steps.Add(ok ? "已连上 " + target : "连接失败：" + (cr.text.Trim().Length > 0 ? cr.text.Trim() : "没有回应"));
         Log("wifi-connect " + target + " ok=" + ok);
+        if (ok) SaveLastDevice(target); // 记住本次连接，供下次自动重连
         return new Dictionary<string, object> { { "ok", ok }, { "text", string.Join("\n", steps) } };
     }
 

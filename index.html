@@ -224,6 +224,7 @@ button,select,input{font:inherit;color:inherit}
               <button class="iconbtn" id="btnWifiGo">连接</button>
             </div>
             <div class="wm" id="wifiMsg"></div>
+            <label class="chk" style="margin-top:8px"><input type="checkbox" id="chkAutoRe"> 启动时自动重连上次设备</label>
           </div>
           <div class="rows" id="devs" style="margin-top:10px"></div>
         </div>
@@ -394,6 +395,7 @@ const api = {
   toWired: (id) => call('to-wired', { id }),
   discover: () => call('wifi-discover'),
   restartAdb: () => call('wifi-restart-adb'),
+  reconnectLast: () => call('reconnect-last'),
   disconnect: (addr) => call('wifi-disconnect', { addr: addr || '' }),
   wifiConnect: (o) => call('wifi-connect', { ip: o.ip || '', port: o.port || '', code: o.code || '' }),
   recentApps: () => call('recent-apps'),
@@ -754,6 +756,19 @@ async function refresh() {
   if (devId && !devs.find(d => d.id === devId)) devId = null; // 不自动选中，由用户点击设备卡片选择
   tier = 0;
   renderAll(); renderConn(); renderWins();
+  maybeAutoReconnect();
+}
+// 折中策略：上次用过的设备启动时自动重连（配对过的地址秒连、不打扰其它设备）；新设备仍手动连接
+let lastAutoAt = 0, lastAutoTried = null;
+async function maybeAutoReconnect() {
+  if (localStorage.getItem('syrAutoRe') === '0') return; // 开关关闭
+  if (Date.now() - lastAutoAt < 15000) return; // 防抖：15 秒内只尝试一次
+  lastAutoAt = Date.now();
+  const r = await api.reconnectLast();
+  const addr = r && r.addr;
+  if (!addr || lastAutoTried === addr) return; // 没有记录，或同一地址已尝试过
+  lastAutoTried = addr;
+  if (r && r.ok) { await refresh(); toast('已自动重连上次设备 ' + addr); }
 }
 
 [].forEach.call(document.querySelectorAll('.nav a'), a => a.onclick = () => switchPage(a.dataset.page));
@@ -871,6 +886,8 @@ $('btnTmplDel').onclick = tmplDelete;
 $('btnAppsRefresh').onclick = renderApps;
 $('appFilter').addEventListener('input', paintApps);
 $('chkShowSys').onchange = () => { appsShowSys = $('chkShowSys').checked; paintApps(); };
+$('chkAutoRe').checked = localStorage.getItem('syrAutoRe') !== '0';
+$('chkAutoRe').onchange = () => localStorage.setItem('syrAutoRe', $('chkAutoRe').checked ? '1' : '0');
 $('btnRestore').onclick = async () => { const d = cur(); if (!d) return toast('没有在线设备', true); await api.restore(d.id); toast('已还原'); refresh(); };
 $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
 
