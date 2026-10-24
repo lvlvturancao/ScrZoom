@@ -215,12 +215,34 @@ h1 em { font-style: normal; color: var(--c-accent); }
 .shots-track figure {
   flex: 0 0 100%;
   margin: 0;
-  aspect-ratio: 16 / 10;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px 18px 16px;
   background: var(--c-bg);
 }
-.shots-track img { width: 100%; height: 100%; object-fit: contain; }
+/* 显示器外框：屏幕按 16:9 画，画面按真实占比放进去，一眼看出原尺寸和铺满的区别 */
+.monitor { width: 100%; }
+.monitor-screen {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border: 8px solid #151d25;
+  border-radius: 10px;
+  background: #04070a;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .05), 0 18px 38px -26px #000;
+}
+.monitor-screen img { display: block; }
+.shot-native .monitor-screen img { height: 66.6%; width: auto; box-shadow: 0 10px 28px -14px #000; }
+.shot-full .monitor-screen img { width: 100%; height: 100%; object-fit: cover; }
+.monitor-neck { width: 58px; height: 13px; margin: 0 auto; background: linear-gradient(180deg, #26313c, #151c23); }
+.monitor-base { width: 132px; height: 6px; margin: 0 auto; border-radius: 0 0 4px 4px; background: #26313c; }
+.shot-meta b { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--c-ink); letter-spacing: .04em; }
+.shot-meta span { display: block; margin-top: 3px; font-family: var(--font-mono); font-size: 11px; color: var(--c-accent); letter-spacing: .03em; }
+.shot-meta p { margin: 6px 0 0; font-size: 12px; line-height: 1.65; color: var(--c-muted); }
 .shots-bar {
   display: flex;
   align-items: center;
@@ -395,15 +417,41 @@ html.js .rise.in {
     <div class="shots rise" style="--i:2" data-carousel aria-roledescription="轮播" aria-label="投屏效果截图">
       <div class="shots-view">
         <div class="shots-track">
-          <figure><img src="shots/cast-handheld.png" alt="掌机启动器界面投在电脑窗口里，画面保持方形" width="760" height="778"></figure>
-          <figure><img src="shots/cast.png" alt="全屏投屏的游戏画面，铺满整个电脑窗口" width="1280" height="720"></figure>
+          <figure class="shot-native">
+            <div class="monitor">
+              <div class="monitor-screen">
+                <img src="shots/cast-handheld.png" alt="RG Rotate 掌机以 720×720 原始分辨率投在电脑窗口里，在 1080p 显示器上只占中间一块" width="760" height="778">
+              </div>
+              <div class="monitor-neck"></div>
+              <div class="monitor-base"></div>
+            </div>
+            <figcaption class="shot-meta">
+              <b>原始分辨率</b>
+              <span>屏幕镜像 · RG Rotate 掌机 · 720×720</span>
+              <p>按设备当前分辨率原样输出。在 1920×1080 的显示器上只占中间这一块，周围还是桌面。</p>
+            </figcaption>
+          </figure>
+          <figure class="shot-full">
+            <div class="monitor">
+              <div class="monitor-screen">
+                <img src="shots/cast.png" alt="同一台掌机全屏放大投屏，画面铺满 1080p 显示器" width="1280" height="720">
+              </div>
+              <div class="monitor-neck"></div>
+              <div class="monitor-base"></div>
+            </div>
+            <figcaption class="shot-meta">
+              <b>全屏显示</b>
+              <span>屏幕镜像 · RG Rotate 掌机 · 720×720</span>
+              <p>画面铺满显示器。设备仍是 720×720，放大在电脑端完成，画面会软一些；要更清晰就选虚拟分辨率放大。</p>
+            </figcaption>
+          </figure>
         </div>
       </div>
       <div class="shots-bar">
-        <p class="shots-cap" data-cap>掌机界面</p>
+        <p class="shots-cap" data-cap>原始分辨率 · 720×720</p>
         <div class="shots-dots" role="tablist" aria-label="选择截图">
-          <button role="tab" aria-selected="true" aria-label="第 1 张：掌机界面" data-i="0"></button>
-          <button role="tab" aria-selected="false" aria-label="第 2 张：全屏投屏" data-i="1"></button>
+          <button role="tab" aria-selected="true" aria-label="第 1 张：原始分辨率" data-i="0"></button>
+          <button role="tab" aria-selected="false" aria-label="第 2 张：全屏显示" data-i="1"></button>
         </div>
       </div>
     </div>
@@ -500,7 +548,7 @@ html.js .rise.in {
     var track = car.querySelector('.shots-track');
     var dots = [].slice.call(car.querySelectorAll('.shots-dots button'));
     var capEl = car.querySelector('[data-cap]');
-    var labels = ['掌机界面', '全屏投屏'];
+    var labels = ['原始分辨率 · 720×720', '全屏显示 · 720×720'];
     var idx = 0, drag = null;
 
     function go(n) {
