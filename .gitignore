@@ -42,3 +42,5 @@ assets/make_ico.py
 # Cloudflare 本地状态与安装包（安装包作为 Release 资产，不进仓库）
 .wrangler/
 cloudflare-pages/public/*.zip
+assets/text-contrast-*.png
+assets/copy-*.png
