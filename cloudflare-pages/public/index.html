@@ -393,7 +393,7 @@ html.js .rise.in {
   <div class="wrap">
     <a class="brand" href="#top">
       <img src="app-icon.png" alt="水月清影图标" width="26" height="26">
-      <b>水月清影</b><span id="verTop">0.1.1</span>
+      <b>水月清影</b><span id="verTop">0.1.2</span>
     </a>
     <nav class="nav">
       <a href="#features">功能</a>
@@ -436,13 +436,13 @@ html.js .rise.in {
           <figure class="shot-full">
             <div class="monitor">
               <div class="monitor-screen">
-                <img src="shots/cast.png" alt="RG Rotate 掌机经虚拟分辨率放大后投满 1080p 显示器，画面清晰" width="1280" height="720">
+                <img src="shots/cast.png" alt="RG Rotate 掌机经高清渲染后投满 1080p 显示器，画面清晰" width="1280" height="720">
               </div>
               <div class="monitor-neck"></div>
               <div class="monitor-base"></div>
             </div>
             <figcaption class="shot-meta">
-              <b>虚拟分辨率放大</b>
+              <b>高清渲染</b>
               <span>RG Rotate 掌机 · 投满 1920×1080</span>
               <p>设备先按更高分辨率重新渲染，再全屏投出来，铺满显示器。字和线条是真重画的，不是把 720 拉大。</p>
             </figcaption>
@@ -453,7 +453,7 @@ html.js .rise.in {
         <p class="shots-cap" data-cap>原始分辨率 · 720×720</p>
         <div class="shots-dots" role="tablist" aria-label="选择截图">
           <button role="tab" aria-selected="true" aria-label="第 1 张：原始分辨率" data-i="0"></button>
-          <button role="tab" aria-selected="false" aria-label="第 2 张：虚拟分辨率放大" data-i="1"></button>
+          <button role="tab" aria-selected="false" aria-label="第 2 张：高清渲染" data-i="1"></button>
         </div>
       </div>
     </div>
@@ -468,7 +468,7 @@ html.js .rise.in {
     </div>
     <dl class="reads">
       <div class="read rise" style="--i:0"><dt>01</dt><div><h3>屏幕镜像</h3><p>把设备画面直接投到窗口，兼容性最好。</p></div></div>
-      <div class="read rise" style="--i:1"><dt>02</dt><div><h3>虚拟分辨率放大</h3><p>设备按更高的分辨率重绘后再投出，不是把画面拉大。</p></div></div>
+      <div class="read rise" style="--i:1"><dt>02</dt><div><h3>高清渲染</h3><p>设备按更高的分辨率重绘后再投出，不是把画面拉大。</p></div></div>
       <div class="read rise" style="--i:2"><dt>03</dt><div><h3>虚拟屏电脑模式</h3><p>每个应用一块独立虚拟屏，在电脑上并排显示。</p></div></div>
       <div class="read rise" style="--i:3"><dt>04</dt><div><h3>应用直达</h3><p>在程序里选中设备上的应用，直接启动到虚拟屏。</p></div></div>
       <div class="read rise" style="--i:4"><dt>05</dt><div><h3>无线连接</h3><p>局域网内自动发现设备，首次配对后可直接连接。</p></div></div>
@@ -505,9 +505,9 @@ html.js .rise.in {
     </div>
     <div class="faq">
       <details><summary>收费吗？会不会偷偷上传我的东西？</summary><p class="ans">免费，没有广告、内购和注册。画面只走 USB 线或你家的局域网，不经过任何服务器；程序里所有操作都在本机完成，只有「检查更新」会去读一次版本清单。</p></details>
-      <details><summary>为什么我的掌机投出来只有一小块，不铺满？</summary><p class="ans">掌机多是 1:1 方屏，显示器是 16:9 宽屏。按比例铺满高度就只能占屏幕宽度的一小条，<b>这是几何限制，不是软件没做好</b>。想真的变大要用「虚拟分辨率放大」，让设备重新画一张更大的图。</p></details>
-      <details><summary>「放大画面」和直接拉伸有什么区别？</summary><p class="ans">拉伸是把 720 的图硬撑大，会糊。这里的做法是先把设备的渲染分辨率调高（比如 720 → 1080），设备按新分辨率重新画一遍再投过来，字和线条是真的更细。代价是设备要多干活，发热和功耗会涨。</p></details>
-      <details><summary>改过设备分辨率，程序崩了没还原怎么办？</summary><p class="ans">进「设备与还原」页，那里有立即还原。它记着改动之前的原值；万一记录也丢了，还能强制恢复出厂值。</p></details>
+      <details><summary>为什么我的掌机投出来只有一小块，不铺满？</summary><p class="ans">掌机多是 1:1 方屏，显示器是 16:9 宽屏。按比例铺满高度就只能占屏幕宽度的一小条，<b>这是几何限制，不是软件没做好</b>。想真的变大要用「高清渲染」，让设备重新画一张更大的图。</p></details>
+      <details><summary>「高清渲染」和直接拉伸有什么区别？</summary><p class="ans">拉伸是把 720 的图硬撑大，会糊。这里的做法是先把设备的渲染分辨率调高（比如 720 → 1080），设备按新分辨率重新画一遍再投过来，字和线条是真的更细。代价是设备要多干活，发热和功耗会涨。</p></details>
+      <details><summary>改过设备分辨率，程序崩了没还原怎么办？</summary><p class="ans">进「显示还原」页，那里有立即还原。它记着改动之前的原值；万一记录也丢了，还能强制还原为设备原始分辨率。</p></details>
       <details><summary>无线投屏要做什么设置？</summary><p class="ans">手机上打开「开发者选项 → 无线调试」，程序里点「无线连接」，它会在局域网里找；第一次需要填一次配对码，之后打开就能直接连。手机和电脑要在同一个网络。</p></details>
       <details><summary>它和直接用 scrcpy 命令行有什么区别？</summary><p class="ans">投屏引擎和命令都来自 scrcpy，界面底部会显示实际执行的那条命令。它在这之上补的是 scrcpy 命令行里没有的部分：局域网自动扫描无线调试设备、配对一次后开机自动重连；从设备已装应用里挑一个直接开到虚拟屏；投之前先给出画面尺寸、占屏幕多少、设备要多付多少开销；全部点按操作，不用记参数。改分辨率、DPI 这类有风险的动作还记了原值并留了一键还原。</p></details>
     </div>
@@ -516,7 +516,7 @@ html.js .rise.in {
 
 <footer class="foot">
   <div class="wrap foot-in">
-    <small>水月清影 <span id="verFoot">0.1.1</span> · 基于 scrcpy · 画面不出本机</small>
+    <small>水月清影 <span id="verFoot">0.1.2</span> · 基于 scrcpy · 画面不出本机</small>
     <nav>
       <a href="https://github.com/Genymobile/scrcpy">基于 scrcpy</a>
       <a href="privacy.html">隐私说明</a>
@@ -550,7 +550,7 @@ html.js .rise.in {
     var track = car.querySelector('.shots-track');
     var dots = [].slice.call(car.querySelectorAll('.shots-dots button'));
     var capEl = car.querySelector('[data-cap]');
-    var labels = ['原始分辨率 · 720×720', '虚拟分辨率放大 · 投满 1920×1080'];
+    var labels = ['原始分辨率 · 720×720', '高清渲染 · 投满 1920×1080'];
     var idx = 0, drag = null;
 
     function go(n) {

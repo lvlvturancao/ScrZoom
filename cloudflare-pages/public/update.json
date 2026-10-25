@@ -1,11 +1,11 @@
 {
-  "versionName": "0.1.0",
-  "versionCode": 1,
-  "title": "水月清影 0.1.0",
-  "notes": "版本 0.1.0。",
-  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.1.0.zip",
-  "size": 12028103,
-  "sha256": "690602c6ff4c53748eaedb3b707f8f85950cf729257447221cc82725b0d2d1f4",
+  "versionName": "0.1.2",
+  "versionCode": 3,
+  "title": "水月清影 0.1.2",
+  "notes": "版本 0.1.2。",
+  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.1.2.zip",
+  "size": 12035584,
+  "sha256": "94279ac0dd521a4504ce25f2d86e59e9eafca098ef1f58cd93e04c1957642431",
   "force": false,
-  "published": "2026-10-24"
+  "published": "2026-10-25"
 }

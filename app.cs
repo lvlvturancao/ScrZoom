@@ -69,6 +69,174 @@ public class MainForm : Form
     string WifiBookFile { get { return Path.Combine(DataDir, "wifi-addresses.json"); } }
     string LegacyWifiFile { get { return Path.Combine(DataDir, "wifi-last.json"); } }
     string NameBookFile { get { return Path.Combine(DataDir, "device-names.json"); } }
+    string SettingsFile { get { return Path.Combine(DataDir, "settings.json"); } }
+    string PendingFile { get { return Path.Combine(DataDir, "restore-pending.json"); } }
+    string CapFile { get { return Path.Combine(DataDir, "device-capabilities.json"); } }
+
+    // 设备能改到多大没有系统接口可查，只能设一次再读回实际值。
+    // 第一次用放大档就是这个过程，顺手记下来，之后直接显示，不用再试探。
+    void RememberCapability(string key, int maxW, int maxH, bool supported, string note)
+    {
+        if (string.IsNullOrEmpty(key)) return;
+        var map = ReadJson(CapFile) as Dictionary<string, object>;
+        if (map == null) map = new Dictionary<string, object>();
+        map[key] = new Dictionary<string, object> {
+            { "maxW", maxW }, { "maxH", maxH }, { "supported", supported },
+            { "note", note ?? "" }, { "at", DateTime.Now.ToString("yyyy-MM-dd") } };
+        WriteJson(CapFile, map);
+    }
+
+    // 正在投屏的每一路：只靠窗口标题分不清（同一台设备的多路标题相同），启动时登记身份
+    class CastSession
+    {
+        public int pid;
+        public string deviceId, deviceName, mode, size, startedAt;
+        public bool scaled;   // 这一路启动前改过设备分辨率，收尾时要还原
+    }
+    static readonly List<CastSession> Sessions = new List<CastSession>();
+    static readonly object SessionLock = new object();
+
+    bool RestoreOnClose()
+    {
+        var j = ReadJson(SettingsFile) as Dictionary<string, object>;
+        if (j == null || !j.ContainsKey("restoreOnClose")) return true;
+        try { return Convert.ToBoolean(j["restoreOnClose"]); } catch { return true; }
+    }
+
+    void SaveRestoreOnClose(bool on)
+    {
+        WriteJson(SettingsFile, new Dictionary<string, object> { { "restoreOnClose", on } });
+    }
+
+    List<CastSession> LiveSessions()
+    {
+        var live = new List<CastSession>();
+        lock (SessionLock)
+        {
+            var dead = new List<CastSession>();
+            foreach (var s in Sessions)
+            {
+                bool alive = false;
+                try { alive = !Process.GetProcessById(s.pid).HasExited; } catch { }
+                if (alive) live.Add(s); else dead.Add(s);
+            }
+            foreach (var d in dead) Sessions.Remove(d);
+        }
+        return live;
+    }
+
+    bool HasLiveSession(string deviceId)
+    {
+        foreach (var s in LiveSessions()) if (s.deviceId == deviceId) return true;
+        return false;
+    }
+
+    // 程序重启前开着的投屏窗口仍在跑，但登记表是内存里的，会丢。
+    // 启动时把它们接管过来：能看见、能关，设备身份未知就标成"已在运行"。
+    void AdoptRunningWindows()
+    {
+        lock (SessionLock)
+        {
+            foreach (var pr in Process.GetProcessesByName("scrcpy"))
+            {
+                if (Sessions.Any(x => x.pid == pr.Id)) continue;
+                string title = "";
+                try { title = pr.MainWindowTitle; } catch { }
+                Sessions.Add(new CastSession {
+                    pid = pr.Id, deviceId = "",
+                    deviceName = string.IsNullOrEmpty(title) ? "投屏窗口" : title,
+                    mode = "已在运行", size = "—", scaled = false,
+                    startedAt = "—"
+                });
+            }
+        }
+    }
+
+    object SessionsList()
+    {
+        var list = new List<object>();
+        foreach (var s in LiveSessions())
+            list.Add(new Dictionary<string, object> {
+                { "pid", s.pid },
+                { "deviceId", s.deviceId },
+                { "deviceName", string.IsNullOrEmpty(s.deviceName) ? s.deviceId : s.deviceName },
+                { "mode", s.mode },
+                { "size", s.size },
+                { "startedAt", s.startedAt },
+                { "scaled", s.scaled } });
+        return list;
+    }
+
+    async Task<object> CloseSession(Dictionary<string, object> p)
+    {
+        int pid;
+        if (!int.TryParse(Ps(p, "pid"), out pid) || pid <= 0) return Err("没指定要关哪一路");
+        bool ok = false;
+        try
+        {
+            var pr = Process.GetProcessById(pid);
+            ok = pr.CloseMainWindow();
+        }
+        catch { }
+        if (!ok)
+        {
+            try { Process.GetProcessById(pid).Kill(); ok = true; } catch { }
+        }
+        await Task.Delay(700);
+        return new Dictionary<string, object> {
+            { "ok", ok }, { "text", ok ? "已关闭这一路投屏" : "这一路可能已经关了" } };
+    }
+
+    async Task<object> CloseDevice(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id");
+        if (id.Length == 0) return Err("没指定设备");
+        int n = 0;
+        foreach (var s in LiveSessions())
+        {
+            if (s.deviceId != id) continue;
+            bool closed = false;
+            try { closed = Process.GetProcessById(s.pid).CloseMainWindow(); } catch { }
+            if (closed) n++;
+        }
+        // 等窗口真正退出，再做一次还原兜底（Exited 里可能已经做过，重复一次无害）
+        for (int i = 0; i < 12 && HasLiveSession(id); i++) await Task.Delay(250);
+        if (n > 0 && RestoreOnClose() && !HasLiveSession(id))
+        {
+            try { await Restore(new Dictionary<string, object> { { "id", id } }); } catch { }
+        }
+        return new Dictionary<string, object> {
+            { "ok", n > 0 }, { "count", n },
+            { "text", n > 0 ? "已结束 " + n + " 路投屏" : "这台设备当前没有投屏" } };
+    }
+
+    object GetSettings()
+    {
+        return new Dictionary<string, object> { { "restoreOnClose", RestoreOnClose() } };
+    }
+
+    object SetRestore(Dictionary<string, object> p)
+    {
+        string raw = Ps(p, "on");
+        bool on = raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+        SaveRestoreOnClose(on);
+        return new Dictionary<string, object> { { "ok", true }, { "restoreOnClose", on } };
+    }
+
+    // 投屏意外断开时还原可能失败（设备当时不可达）。标记下来，等重连成功后补一次；
+    // 不能只看有没有未还原记录：正常重启程序时那条记录本来就应该留着，不能擅自还原。
+    async Task TryRestorePending()
+    {
+        var pend = ReadJson(PendingFile) as Dictionary<string, object>;
+        if (pend == null) return;
+        string id = Convert.ToString(pend["id"]);
+        if (string.IsNullOrEmpty(id)) { try { File.Delete(PendingFile); } catch { } return; }
+        if (!RestoreOnClose()) return;
+        var r = await Restore(new Dictionary<string, object> { { "id", id } });
+        var d = r as Dictionary<string, object>;
+        if (d != null && d.ContainsKey("error")) Log("重连后补还原未完成: " + d["error"]);
+        else { try { File.Delete(PendingFile); } catch { } Log("重连后补还原完成 " + id); }
+    }
     static readonly object NameLock = new object();
 
     // 设备名字簿：扫描到的设备只有地址，靠这张表把地址/序列号还原成型号名
@@ -125,6 +293,7 @@ public class MainForm : Form
 
         wv = new WebView2 { Dock = DockStyle.Fill };
         Controls.Add(wv);
+        AdoptRunningWindows();
         Load += async (s, e) => await Init();
     }
 
@@ -139,6 +308,15 @@ public class MainForm : Form
             wv.CoreWebView2.Settings.IsStatusBarEnabled = false;
             wv.CoreWebView2.WebMessageReceived += OnMessage;
             wv.CoreWebView2.Navigate(new Uri(Path.Combine(AppDir(), "index.html")).AbsoluteUri);
+
+            // 启动自检：确认程序进程里跑 adb mdns 能不能拿到广播（排查扫描不到新端口的依据）
+            try
+            {
+                var md = await Run(adbExe, new[] { "mdns", "services" }, 7000);
+                string flat = md.text.Replace("\r", " ").Replace("\n", " | ");
+                Log("自检 mdns 端口变量=" + (Environment.GetEnvironmentVariable("ANDROID_ADB_SERVER_PORT") ?? "默认") + " 输出: " + flat.Trim());
+            }
+            catch (Exception mdEx) { Log("自检 mdns 失败: " + mdEx.Message); }
         }
         catch (Exception ex)
         {
@@ -177,8 +355,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.1.1";
-    public const int AppVersionCode = 2;
+    public const string AppVersion = "0.1.2";
+    public const int AppVersionCode = 3;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -285,6 +463,11 @@ public class MainForm : Form
             case "wifi-disconnect": return await WifiDisconnect(p);
             case "wifi-connect": return await WifiConnect(p);
             case "wifi-forget": return WifiForget(p);
+            case "sessions": return SessionsList();
+            case "close-session": return await CloseSession(p);
+            case "close-device": return await CloseDevice(p);
+            case "settings": return GetSettings();
+            case "set-restore": return SetRestore(p);
             case "wifi-restart-adb": return await RestartAdb();
             case "reconnect-last": return await ReconnectLast();
         }
@@ -463,7 +646,9 @@ public class MainForm : Form
         var a = new List<string> { "-s", Ps(p, "id"), "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid" };
         if (Ps(p, "fullscreen") == "1") a.Add("--fullscreen");
-        return Spawn(a);
+        return Spawn(a, Ps(p, "id"),
+            Ps(p, "fullscreen") == "1" ? "镜像 · 全屏" : "镜像",
+            Ps(p, "size"), false);
     }
 
     async Task<object> LaunchWindow(Dictionary<string, object> p)
@@ -480,7 +665,7 @@ public class MainForm : Form
             a.Add("--start-app=" + (isPkg ? app : "?" + app));
             if (!isPkg) Remember(app);
         }
-        var res = Spawn(a);
+        var res = Spawn(a, id, "虚拟屏", Ps(p, "size", "1280x720/240").Split('/')[0], false);
         var dict = res as Dictionary<string, object>;
         if (dict != null && dict.ContainsKey("ok") && Convert.ToBoolean(dict["ok"]))
         {
@@ -504,11 +689,15 @@ public class MainForm : Form
         var info = await ReadWm(id);
         string phys = (string)info["physicalSize"];
         var wh = phys.Split('x');
-        if (wh.Length != 2) return Err("读不到设备出厂分辨率");
+        if (wh.Length != 2) return Err("读不到设备原始分辨率");
         int pw = int.Parse(wh[0]), ph = int.Parse(wh[1]);
         int dpi0 = (int)info["physicalDpi"];
         int monW = int.Parse(Ps(p, "monW", "1920")), monH = int.Parse(Ps(p, "monH", "1080"));
         string kind = Ps(p, "kind", "factor");
+        string devKey = LookupName(LoadNames(), "", id);
+        if (string.IsNullOrEmpty(devKey)) devKey = id;
+        string beforeSize = Convert.ToString(info["currentSize"]);
+        string notice = "";
         int w, h, dpi;
 
         if (kind == "fill")
@@ -518,9 +707,18 @@ public class MainForm : Form
             var back = await ReadWm(id);
             var aw = ((string)back["currentSize"]).Split('x');
             if (aw.Length != 2) return Err("设备不接受该分辨率");
+            if (aw[0] == pw.ToString() && aw[1] == ph.ToString() && (monW != pw || monH != ph))
+            {
+                RememberCapability(devKey, 0, 0, false, "系统拒绝 adb 修改分辨率");
+                return Err("这台设备不允许 adb 修改分辨率（系统限制了这项权限），放大档位用不了");
+            }
+            RememberCapability(devKey, int.Parse(aw[0]), int.Parse(aw[1]), true,
+                "目标 " + monW + "×" + monH + "，设备实际接受 " + aw[0] + "×" + aw[1]);
             double k = Math.Min(int.Parse(aw[0]) / (double)monW, int.Parse(aw[1]) / (double)monH);
             w = (int)Math.Round(monW * k); h = (int)Math.Round(monH * k);
             dpi = (int)Math.Round(dpi0 * (h / (double)ph));
+            if (int.Parse(aw[0]) != monW || int.Parse(aw[1]) != monH)
+                notice = "这台设备最多只能到 " + aw[0] + "×" + aw[1] + "，已按 " + w + "×" + h + " 投屏";
         }
         else
         {
@@ -539,16 +737,42 @@ public class MainForm : Form
         var now = await ReadWm(id);
         var got = ((string)now["currentSize"]).Split('x');
 
+        // 设了但没变 = 设备拒绝了（常见于 realme/OPPO 这类收紧了 shell 权限的 ROM）。
+        // 这时不能装作成功继续投，否则用户看到的是"标着放大、其实没放大"。
+        if (kind != "fill" && got.Length == 2)
+        {
+            var before = beforeSize.Split('x');
+            bool untouched = before.Length == 2 && got[0] == before[0] && got[1] == before[1];
+            bool exact = got[0] == w.ToString() && got[1] == h.ToString();
+            if (untouched && !exact)
+            {
+                RememberCapability(devKey, 0, 0, false, "系统拒绝 adb 修改分辨率");
+                return Err("这台设备不允许 adb 修改分辨率（系统限制了这项权限），放大档位用不了");
+            }
+            if (exact) RememberCapability(devKey, w, h, true, "按目标尺寸生效");
+            else
+            {
+                RememberCapability(devKey, int.Parse(got[0]), int.Parse(got[1]), true,
+                    "目标 " + w + "×" + h + "，设备实际接受 " + got[0] + "×" + got[1]);
+                notice = "设备最多只接受 " + got[0] + "×" + got[1] + "，已按这个尺寸投屏";
+            }
+        }
+
         var a = new List<string> { "-s", id, "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid", "--fullscreen" };
-        var res = Spawn(a);
+        var res = Spawn(a, id, "放大", w + "×" + h, true);
         var dict = res as Dictionary<string, object>;
-        if (dict != null && got.Length == 2)
-            dict["applied"] = got[0] + "×" + got[1] + " / " + now["currentDpi"];
+        if (dict != null)
+        {
+            if (got.Length == 2)
+                dict["applied"] = new Dictionary<string, object> {
+                    { "w", int.Parse(got[0]) }, { "h", int.Parse(got[1]) }, { "dpi", now["currentDpi"] } };
+            if (notice.Length > 0) dict["notice"] = notice;
+        }
         return res;
     }
 
-    object Spawn(List<string> a)
+    object Spawn(List<string> a, string id, string mode, string size, bool scaled)
     {
         if (scrcpyExe == null) return Err("没找到 scrcpy.exe");
         try
@@ -562,6 +786,13 @@ public class MainForm : Form
                 WorkingDirectory = engineDir
             };
             var pr = Process.Start(psi);
+            var sess = new CastSession {
+                pid = pr.Id, deviceId = id,
+                deviceName = LookupName(LoadNames(), "", id),
+                mode = mode, size = size, scaled = scaled,
+                startedAt = DateTime.Now.ToString("HH:mm")
+            };
+            lock (SessionLock) Sessions.Add(sess);
             int n = 0;
             // 开头 40 行走日志；同时留一份环形缓冲，退出时把最后几行打出来——
             // 断连原因通常只在最后几行，不留在缓冲里就查不到
@@ -590,6 +821,20 @@ public class MainForm : Form
                 Log("scrcpy 退出 code=" + code);
                 int from = Math.Max(0, last.Length - 12);
                 for (int i = from; i < last.Length; i++) Log("  | " + last[i]);
+                // 无论是谁关的这一路（程序、Alt+F4、任务栏），最后一路收尾时把设备参数还原
+                lock (SessionLock) Sessions.Remove(sess);
+                if (sess.scaled && RestoreOnClose() && !HasLiveSession(sess.deviceId))
+                {
+                    try
+                    {
+                        var rr = await Restore(new Dictionary<string, object> { { "id", sess.deviceId } });
+                        var rd = rr as Dictionary<string, object>;
+                        bool bad = rd != null && rd.ContainsKey("error");
+                        if (bad) WriteJson(PendingFile, new Dictionary<string, object> { { "id", sess.deviceId } });
+                        Log("关闭投屏后自动还原 " + sess.deviceId + (bad ? " 失败：" + rd["error"] : " 完成"));
+                    }
+                    catch (Exception ex2) { Log("自动还原异常: " + ex2.Message); }
+                }
             };
             pr.BeginOutputReadLine();
             pr.BeginErrorReadLine();
@@ -631,14 +876,17 @@ public class MainForm : Form
         if (st != null && Convert.ToString(st["id"]) == id)
         {
             string so = Convert.ToString(st["sizeOverride"]), dobj = Convert.ToString(st["dpiOverride"]);
-            await Adb(id, "shell", "wm", "size", string.IsNullOrEmpty(so) || so == "null" ? "reset" : so);
-            await Adb(id, "shell", "wm", "density", string.IsNullOrEmpty(dobj) || dobj == "null" ? "reset" : dobj);
-            try { File.Delete(StateFile); } catch { }
+            var r1 = await Adb(id, "shell", "wm", "size", string.IsNullOrEmpty(so) || so == "null" ? "reset" : so);
+            var r2 = await Adb(id, "shell", "wm", "density", string.IsNullOrEmpty(dobj) || dobj == "null" ? "reset" : dobj);
+            // 设备没响应就别删记录：留着，等重连回来再补还原
+            if (r1.ok && r2.ok) { try { File.Delete(StateFile); } catch { } }
+            else return Err("设备没响应，还原记录已保留，重连后会自动再试");
         }
         else
         {
-            await Adb(id, "shell", "wm", "size", "reset");
-            await Adb(id, "shell", "wm", "density", "reset");
+            var r1 = await Adb(id, "shell", "wm", "size", "reset");
+            var r2 = await Adb(id, "shell", "wm", "density", "reset");
+            if (!r1.ok || !r2.ok) return Err("设备没响应，没能还原设备原始分辨率");
         }
         return await ReadWm(id);
     }
@@ -689,9 +937,12 @@ public class MainForm : Form
         // adb 的 mDNS 查询不稳定：一次查询经常漏设备，多轮查询合并提高发现率；
         // 全部为空时再补一轮（mDNS 后端可能短暂失聪，这里不重启 adb server，避免打断正在投屏的会话）
         bool mdnsEmpty = true;
+        string rawSample = "";
+        int rawEntries = 0;
         Func<Task> parseMdns = async () =>
         {
             var r = await Run(adbExe, new[] { "mdns", "services" }, 7000);
+            if (rawSample.Length == 0 && r.text.Trim().Length > 0) rawSample = r.text;
             foreach (var line in r.text.Split('\n'))
             {
                 var l = line.Trim();
@@ -704,6 +955,7 @@ public class MainForm : Form
                     if (s.Length == 2 && s[1].Length > 0 && s[1].All(char.IsDigit)) { addr = x; break; }
                 }
                 if (addr == null) continue;
+                rawEntries++;
                 name = string.Join(" ", tokens.Where(t => t != addr)
                     .Select(t => t.Replace("._adb-tls-connect._tcp", "").Replace("._adb-tls-pairing._tcp", ""))
                     .Where(t => t.Length > 0));
@@ -720,10 +972,13 @@ public class MainForm : Form
                 mdnsEmpty = false;
             }
         };
-        for (int attempt = 0; attempt < 4; attempt++)
+        // 设备的定时广播会间歇性断档（息屏时尤其明显）：先保证 3 轮用于多设备召回，
+        // 之后一旦有结果就停；一直空就等满约 9 秒，别让一次扫描白跑
+        for (int attempt = 0; attempt < 10; attempt++)
         {
             await parseMdns();
-            if (attempt < 3) await Task.Delay(700);
+            if (attempt >= 2 && byIp.Count > 0) break;
+            if (attempt < 9) await Task.Delay(900);
         }
         if (mdnsEmpty)
         {
@@ -752,7 +1007,9 @@ public class MainForm : Form
             }
         }
 
-        Log("wifi-discover 待连接 " + found.Count + " 台（已连接排除 " + connIps.Count + " 台 IP，广播 " + byIp.Count + " 台，常用地址探了 " + todo.Count + " 个）");
+        Log("wifi-discover 待连接 " + found.Count + " 台（已连接 IP: " + string.Join(",", connIps) + "；广播条目 " + rawEntries + " 条，入列 " + byIp.Count + " 台；常用地址探了 " + todo.Count + " 个）");
+        if (byIp.Count == 0)
+            Log("wifi-discover 无广播，mdns 原始输出: " + (rawSample.Length > 0 ? rawSample.Replace("\r", "").Replace("\n", " | ") : "(空)"));
         return found;
     }
 
@@ -821,6 +1078,7 @@ public class MainForm : Form
             if (online.Any(c => c == addr || c.Split(':')[0] == addr.Split(':')[0]))
             {
                 SaveLastDevice(addr); RememberWifi(addr);
+                await TryRestorePending();
                 return new Dictionary<string, object> { { "ok", true }, { "text", "已经在线" }, { "addr", addr } };
             }
             var r = await Run(adbExe, new[] { "connect", addr }, 7000);
@@ -830,6 +1088,7 @@ public class MainForm : Form
             if (ok)
             {
                 SaveLastDevice(addr); RememberWifi(addr);
+                await TryRestorePending();
                 return new Dictionary<string, object> { { "ok", true }, { "text", r.text.Trim() }, { "addr", addr } };
             }
         }
@@ -872,14 +1131,19 @@ public class MainForm : Form
         }
         var last = LoadLastDevice();
         if (last.Length > 0 && last.Contains(":") && !outList.Contains(last)) outList.Insert(0, last);
-        return outList.Take(8).ToList();
+        // 同一台设备的端口会变，只留最近的那一条，否则列表里会堆一串连不上的旧端口
+        var seenIps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dedup = new List<string>();
+        foreach (var a in outList) { if (!a.Contains(":")) continue; if (seenIps.Add(a.Split(':')[0])) dedup.Add(a); }
+        return dedup.Take(8).ToList();
     }
 
     void RememberWifi(string addr)
     {
         if (string.IsNullOrEmpty(addr) || !addr.Contains(":")) return;
         var list = WifiBook();
-        list.Remove(addr);
+        string ip = addr.Split(':')[0];
+        list.RemoveAll(a => a.Split(':')[0] == ip);   // 同 IP 的旧端口直接顶掉
         list.Insert(0, addr);
         WriteJson(WifiBookFile, list.Take(8).Select(a => new Dictionary<string, object> { { "addr", a } }).ToList());
     }
@@ -972,6 +1236,31 @@ public class MainForm : Form
             if (back.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
                 && back.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0)
             { ok = true; target = addr; }
+        }
+        // 常用地址里的端口可能已经失效（设备重开无线调试会换端口）：
+        // 现场再发现一次，同 IP 的其它端口直接拿来重试
+        if (!ok)
+        {
+            var fresh = await WifiDiscover() as List<object>;
+            if (fresh != null)
+            {
+                var cand = fresh.Select(o => o as Dictionary<string, object>)
+                                .FirstOrDefault(o => o != null
+                                    && Convert.ToString(o["kind"]) == "connect"
+                                    && Convert.ToString(o["addr"]).Split(':')[0] == ip
+                                    && Convert.ToString(o["addr"]) != target);
+                if (cand != null)
+                {
+                    string na = Convert.ToString(cand["addr"]);
+                    var r2 = await Run(adbExe, new[] { "connect", na }, 20000);
+                    if (r2.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
+                        && r2.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        ok = true; target = na;
+                        steps.Add("端口已变，改连 " + na);
+                    }
+                }
+            }
         }
         steps.Add(ok ? "已连上 " + target : "连接失败：" + (cr.text.Trim().Length > 0 ? cr.text.Trim() : "没有回应"));
         Log("wifi-connect " + target + " ok=" + ok);

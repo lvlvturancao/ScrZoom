@@ -126,9 +126,17 @@ button,select,input{font:inherit;color:inherit}
 .call.warn{border-left-color:var(--warn);background:var(--warn-soft);color:#6d4a15}
 .call.bad{border-left-color:var(--bad);background:var(--bad-soft);color:#7c2f31}
 .call b{color:var(--text);font-weight:600}
+.casts{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.casts .ch{font-size:11.5px;color:var(--text-3);letter-spacing:1px;margin-bottom:9px}
+.casts .none{font-size:12px;color:var(--text-3);line-height:1.7;padding:4px 0}
+.casts .cast{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--sunken);border-radius:13px;padding:9px 11px;margin-bottom:7px}
+.casts .cn{font-size:12.5px;font-weight:600}
+.casts .cm{font-size:11.5px;color:var(--text-3);margin-top:2px;font-variant-numeric:tabular-nums}
+.casts .cast .sp{flex:1}
+.casts .cast .b2{padding:5px 11px;font-size:11.5px}
 
 /* ── 信息提示：悬浮/点击显示说明，保持界面精简 ── */
-.tip{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:10px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:-2px;transition:.16s}
+.tip{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:10px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:middle;transition:.16s}
 .tip:hover,.tip.open{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 .tip .bub{display:none}
 #bubHost{position:fixed;top:0;left:0;z-index:999;pointer-events:none;display:none}
@@ -213,7 +221,7 @@ button,select,input{font:inherit;color:inherit}
     <div class="nav">
       <a class="on" data-page="cast"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2.5"/><path d="M9 21h6M12 17v4"/><path d="M8.5 12.5a4.5 4.5 0 0 1 7 0"/></svg><span>投屏</span></a>
       <a data-page="wins"><svg viewBox="0 0 24 24"><rect x="3.5" y="6.5" width="13" height="11" rx="2"/><path d="M8 6.5V4.8a1.3 1.3 0 0 1 1.3-1.3h10.4A2 2 0 0 1 21.7 5.5V15a1.3 1.3 0 0 1-1.3 1.3h-1.9"/></svg><span>应用窗口</span></a>
-      <a data-page="conn"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 18.5h3"/><path d="M2.5 12a3.5 3.5 0 0 0 3.5 3.5"/><path d="M21.5 12a3.5 3.5 0 0 1-3.5 3.5"/></svg><span>设备与还原</span></a>
+      <a data-page="conn"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 18.5h3"/><path d="M2.5 12a3.5 3.5 0 0 0 3.5 3.5"/><path d="M21.5 12a3.5 3.5 0 0 1-3.5 3.5"/></svg><span>显示还原</span></a>
       <div class="grp">本机</div>
       <div class="meta" id="navMeta">显示器 —<br>引擎 —</div>
     </div>
@@ -308,21 +316,14 @@ button,select,input{font:inherit;color:inherit}
           <div class="chips" id="recent"></div>
           <div class="desc" id="winDesc"></div>
         </div>
-        <div class="sec">
-          <div class="h"><b>当前窗口</b></div>
-          <div class="rows" id="winList"></div>
-        </div>
       </div>
 
-      <!-- 设备与还原 -->
+      <!-- 显示还原 -->
       <div class="page" id="pg-conn">
-        <div class="sec">
-          <div class="h"><b>无线连接</b><span>首次需插线执行一次，之后可拔线</span></div>
-          <div class="rows" id="connBox"></div>
-        </div>
         <div class="sec">
           <div class="h"><b>分辨率还原</b><span>改过画面档位但没自动还原时用这里</span></div>
           <div class="rows" id="restoreBox"></div>
+          <label class="chk" style="margin-top:11px"><input type="checkbox" id="chkRestoreClose" checked> 结束投屏后还原设备参数</label>
         </div>
       </div>
     </div>
@@ -346,14 +347,15 @@ button,select,input{font:inherit;color:inherit}
         <div class="rw"><span class="k">设备负担</span><span class="v" id="vCost">—</span></div>
       </div>
       <div class="call" id="call"></div>
+      <div class="casts" id="castList"></div>
     </aside>
   </div>
 
   <div class="foot">
     <div class="cmd" id="cmd">$ —</div>
     <span class="sp"></span>
-    <button class="b2" id="btnRestore">还原设备分辨率</button>
     <button class="go" id="btnGo">开始投屏</button>
+    <button class="b2" id="btnStop">结束投屏</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -407,6 +409,11 @@ const api = {
   launchWindow: (o) => call('launch-window', { id: o.id, app: o.app || '', size: o.size, bitrate: o.bitrate }),
   windows: () => call('windows'),
   closeWindows: () => call('close-windows'),
+  sessions: () => call('sessions'),
+  closeSession: (pid) => call('close-session', { pid: String(pid) }),
+  closeDevice: (id) => call('close-device', { id }),
+  settings: () => call('settings'),
+  setRestore: (on) => call('set-restore', { on: on ? '1' : '0' }),
   vdList: (id) => call('vd-list', { id }),
   vdCleanup: (id) => call('vd-cleanup', { id }),
   vdTemplates: () => call('vd-templates'),
@@ -469,13 +476,13 @@ function tiersFor(d) {
     const s = [Math.round(cw * k), Math.round(ch * k)];
     out.push({ nm: '原始分辨率', ds: `按设备当前 ${cw}×${ch} 点对点输出，不缩放不放大`, size: s, px: 1, cost: '无增加', cls: '',
       tip: k < 1
-        ? `设备当前 ${cw}×${ch}，比显示器高，窗口会等比缩到 ${s[0]}×${s[1]}。像素来自设备，不插值。要更大得用「放大画面」。`
-        : `设备当前 ${cw}×${ch}，按原尺寸开窗，一个像素对一个像素，不放大。想填满屏幕用「放大画面」。`,
-      run: () => api.launchMirror({ id: d.id, fullscreen: false, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+        ? `设备当前 ${cw}×${ch}，比显示器高，窗口会等比缩到 ${s[0]}×${s[1]}。像素来自设备，不插值。要更大得用「高清渲染」。`
+        : `设备当前 ${cw}×${ch}，按原尺寸开窗，一个像素对一个像素，不放大。想填满屏幕用「高清渲染」。`,
+      run: () => api.launchMirror({ id: d.id, fullscreen: false, size: s[0] + '×' + s[1], bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: '仅镜像（默认参数）' });
     out.push({ nm: '全屏显示', ds: '隐藏窗口边框铺满屏幕，按 Alt+F 随时切换', size: s, px: 1, cost: '无增加', cls: '',
-      tip: '全屏只是去掉边框，画面像素不变，<b>不会更清楚</b>。要更清楚用「放大画面」。',
-      run: () => api.launchMirror({ id: d.id, fullscreen: true, bitrate: $('fBitrate').value, fps: $('fFps').value }),
+      tip: '全屏只是去掉边框，画面像素不变，<b>不会更清楚</b>。要更清楚用「高清渲染」。',
+      run: () => api.launchMirror({ id: d.id, fullscreen: true, size: s[0] + '×' + s[1], bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: '--fullscreen' });
     return out;
   }
@@ -562,7 +569,7 @@ function renderDevs() {
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
 }
 function renderSeg() {
-  const items = [['mirror', '屏幕镜像'], ['scale', '虚拟分辨率放大'], ['multi', '多屏实例']];
+  const items = [['mirror', '屏幕镜像'], ['scale', '高清渲染'], ['multi', '多屏实例']];
   $('seg').innerHTML = items.map(([k, t]) =>
     `<button class="${k === mode ? 'on' : ''}" data-k="${k}"><span class="dot"></span>${t}</button>`).join('');
   [].forEach.call($('seg').querySelectorAll('button'), b => b.onclick = () => { mode = b.dataset.k; tier = 0; renderAll(); });
@@ -604,35 +611,38 @@ function renderOut() {
   $('cmd').innerHTML = '$ scrcpy ' + (t ? '<em>' + esc(t.cmd) + '</em>' : '');
   $('btnGo').disabled = !live;
 }
+let castCount = 0;
 async function renderWins() {
-  const list = await api.windows();
-  const box = $('winList');
-  box.innerHTML = list.length ? list.map(w =>
-    `<div class="row"><span class="ic">${IC.win}</span><div><div class="nm">${esc(w.title || '投屏窗口')}</div><div class="mt">进程 ${w.pid}</div></div>
-     <span class="sp"></span><span class="tag">运行中</span></div>`).join('')
-    : '<div class="empty">当前没有投屏窗口。</div>';
-  const nw = $('navWins'); if (nw) nw.textContent = String(list.length);
-  return list.length;
+  const list = await api.sessions();
+  const box = $('castList');
+  const arr = Array.isArray(list) ? list : [];
+  castCount = arr.length;
+  const stop = $('btnStop');
+  if (stop) stop.disabled = castCount === 0;
+  if (!box) return castCount;
+  if (!castCount) {
+    box.innerHTML = '<div class="ch">正在投屏</div><div class="none">还没有投屏。选好设备与档位，点右下角开始。</div>';
+    return 0;
+  }
+  box.innerHTML = '<div class="ch">正在投屏</div>' + arr.map(x =>
+    `<div class="cast"><div><div class="cn">${esc(x.deviceName || x.deviceId)}</div>
+      <div class="cm">${esc(x.mode)} · ${esc(x.size || '—')} · ${esc(x.startedAt)}</div></div>
+      <span class="sp"></span><button class="b2" data-pid="${x.pid}">关闭</button></div>`).join('');
+  [].forEach.call(box.querySelectorAll('button[data-pid]'), b => b.onclick = async () => {
+    b.disabled = true;
+    const r = await api.closeSession(b.dataset.pid);
+    toast((r && r.ok) ? '已关闭这一路' : '这一路可能已经关了', !(r && r.ok));
+    await refresh(); await renderWins();
+  });
+  return castCount;
 }
 async function renderConn() {
-  const d = cur();
-  $('connBox').innerHTML = d ? `<div class="row"><span class="ic">${d.via === 'usb' ? IC.usb : IC.wifi}</span>
-    <div><div class="nm">${esc(d.name)}</div><div class="mt">${esc(d.id)}</div></div><span class="sp"></span>
-    <button class="b2" id="btnNet">${d.via === 'usb' ? '切到无线' : '切回有线'}</button></div>`
-    : '<div class="empty">没有在线设备。</div>';
-  const bn = $('btnNet');
-  if (bn) bn.onclick = async () => {
-    bn.disabled = true;
-    const r = d.via === 'usb' ? await api.toWireless(d.id) : await api.toWired(d.id);
-    toast(r.ok ? (d.via === 'usb' ? '已切到无线 ' + r.addr : '已切回有线') : '失败：' + (r.error || r.text), !r.ok);
-    await refresh();
-  };
   const st = await api.state();
   $('restoreBox').innerHTML = st
-    ? `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '出厂')} / ${esc(st.dpiOverride || '出厂')}</div></div>
+    ? `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '原始')} / ${esc(st.dpiOverride || '原始')}</div></div>
        <span class="sp"></span><button class="b2" id="btnDoRestore">立即还原</button></div>`
-    : `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">没有未还原的记录</div><div class="mt">如需强行恢复出厂分辨率，点右侧按钮</div></div>
-       <span class="sp"></span><button class="b2" id="btnDoRestore">强行恢复出厂</button></div>`;
+    : `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">没有未还原的记录</div><div class="mt">如需强制还原为设备原始分辨率，点右侧按钮</div></div>
+       <span class="sp"></span><button class="b2" id="btnDoRestore">还原原始分辨率</button></div>`;
   $('btnDoRestore').onclick = async () => {
     if (!d) return toast('没有在线设备', true);
     await api.restore(d.id);
@@ -922,13 +932,33 @@ function switchDevTab(k) {
 [].forEach.call($('devTab').querySelectorAll('button'), b => b.onclick = () => switchDevTab(b.dataset.t));
 $('btnWifiGo').onclick = wifiGo;
 ['wifiIp', 'wifiPort', 'wifiCode'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') wifiGo(); }));
+$('btnStop').onclick = async () => {
+  const d = cur();
+  if (!d) return toast('先选一台设备', true);
+  if (!castCount) return toast('这台设备当前没有投屏', true);
+  $('btnStop').disabled = true;
+  const r = await api.closeDevice(d.id);
+  toast((r && r.text) || '已结束投屏', !(r && r.ok));
+  if (r && r.ok) await new Promise(res => setTimeout(res, 900));
+  await refresh(); await renderWins();
+};
+(async function () {
+  const cb = $('chkRestoreClose');
+  if (!cb) return;
+  try { const st = await api.settings(); cb.checked = !!(st && st.restoreOnClose); } catch (e) { }
+  cb.onchange = async () => {
+    await api.setRestore(cb.checked);
+    toast(cb.checked ? '结束投屏后会还原设备参数' : '结束投屏后保持当前分辨率', false);
+  };
+})();
 $('btnGo').onclick = async () => {
   const t = at(); if (!t || !t.run) { toast('先在设备列表里点选一台设备', true); return; }
   $('btnGo').disabled = true; $('btnGo').textContent = '启动中…';
   try {
     const r = await t.run();
     if (r && r.error) toast(r.error, true);
-    else if (r && r.applied) toast('已按设备实际接受值 ' + r.applied.w + '×' + r.applied.h + ' 投屏');
+    else if (r && r.notice) toast(r.notice);
+    else if (r && r.applied && r.applied.w) toast('已按设备实际接受值 ' + r.applied.w + '×' + r.applied.h + ' 投屏');
     setTimeout(() => { renderWins(); }, 2500);
   } catch (e) { toast('启动异常：' + e.message, true); }
   $('btnGo').textContent = '开始投屏'; $('btnGo').disabled = false;
@@ -943,7 +973,6 @@ $('appFilter').addEventListener('input', paintApps);
 $('chkShowSys').onchange = () => { appsShowSys = $('chkShowSys').checked; paintApps(); };
 $('chkAutoRe').checked = localStorage.getItem('syrAutoRe') !== '0';
 $('chkAutoRe').onchange = () => localStorage.setItem('syrAutoRe', $('chkAutoRe').checked ? '1' : '0');
-$('btnRestore').onclick = async () => { const d = cur(); if (!d) return toast('没有在线设备', true); await api.restore(d.id); toast('已还原'); refresh(); };
 $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
 
 /* ── 关于、打赏与更新 ── */
