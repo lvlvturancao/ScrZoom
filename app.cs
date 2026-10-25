@@ -48,6 +48,8 @@ static class Program
             catch { }
             return;
         }
+        // .NET 4.0 默认只启用 TLS 1.0，Cloudflare 只接受 1.2 及以上；不设这句「检查更新」必然失败
+        try { System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; } catch { }
         try { SetCurrentProcessExplicitAppUserModelID("Shuiyue.ScreenZoom"); } catch { }
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -317,6 +319,7 @@ public class MainForm : Form
                 Log("自检 mdns 端口变量=" + (Environment.GetEnvironmentVariable("ANDROID_ADB_SERVER_PORT") ?? "默认") + " 输出: " + flat.Trim());
             }
             catch (Exception mdEx) { Log("自检 mdns 失败: " + mdEx.Message); }
+
         }
         catch (Exception ex)
         {
@@ -355,8 +358,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.1.2";
-    public const int AppVersionCode = 3;
+    public const string AppVersion = "0.1.3";
+    public const int AppVersionCode = 4;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -1562,9 +1565,7 @@ public class MainForm : Form
             { "app", "水月清影" },
             { "version", AppVersion },
             { "versionCode", AppVersionCode },
-            { "engine", engineDir ?? "" },
-            { "license", "GPL-3.0" },
-            { "dir", AppDir() }
+            { "license", "GPL-3.0" }
         };
     }
 
@@ -1576,7 +1577,7 @@ public class MainForm : Form
             text = await Task.Run(() =>
             {
                 var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(UpdateUrl + "?v=" + AppVersionCode);
-                req.Timeout = 8000; req.ReadWriteTimeout = 8000; req.Proxy = null;
+                req.Timeout = 8000; req.ReadWriteTimeout = 8000;
                 req.UserAgent = "shuiyue/" + AppVersion;
                 using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
                 using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))

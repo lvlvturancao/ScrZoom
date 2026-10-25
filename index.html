@@ -979,7 +979,7 @@ $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
 async function openAbout() {
   try {
     const r = await api.about();
-    $('aboutMeta').textContent = '引擎 ' + ((r && r.engine) || '—') + ' · ' + ((r && r.license) || '');
+    $('aboutMeta').textContent = '投屏引擎 scrcpy · ' + ((r && r.license) || '');
     $('upVer').textContent = (r && r.version) || '—';
   } catch (e) { }
   const msg = $('upMsg');
