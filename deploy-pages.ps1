@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Project = "shuiyue"
 )
 # 把 cloudflare-pages/public 部署到 Cloudflare Pages。产物由 publish.ps1 生成。

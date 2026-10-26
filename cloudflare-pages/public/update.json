@@ -1,11 +1,11 @@
 {
-  "versionName": "0.1.3",
-  "versionCode": 4,
-  "title": "水月清影 0.1.3",
-  "notes": "版本 0.1.3。",
-  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.1.3.zip",
-  "size": 12035617,
-  "sha256": "6edaf413ecafbb92549a58f7b93745c9d8c7140b32d5d02580559439ec4eb86e",
+  "versionName": "0.2.0",
+  "versionCode": 5,
+  "title": "水月清影 0.2.0",
+  "notes": "0.2.0：修复软件本体在高分屏下 UI 发虚（PerMonitorV2 逐显示器感知，跨屏拖动实时跟随缩放）；无线连接发现重写，同局域网可直接搜到设备；设备断连后状态实时更新并自动重连；投屏目标可选副屏；DPI 还原改为恢复用户原始设置而非厂商默认值。",
+  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.2.0-win-x64.zip",
+  "size": 12071443,
+  "sha256": "1c00cbda8925dbd58f7c2baed32f8ea75bfc85943453361682c1047479fe5f8f",
   "force": false,
-  "published": "2026-10-25"
+  "published": "2026-10-26"
 }

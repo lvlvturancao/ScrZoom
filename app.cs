@@ -5,6 +5,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -69,11 +72,69 @@ public class MainForm : Form
     string AppsCacheFile { get { return Path.Combine(DataDir, "apps-cache.json"); } }
     string LastDevFile { get { return Path.Combine(DataDir, "last-device.json"); } }
     string WifiBookFile { get { return Path.Combine(DataDir, "wifi-addresses.json"); } }
+    string UsageFile { get { return Path.Combine(DataDir, "app-usage.json"); } }
     string LegacyWifiFile { get { return Path.Combine(DataDir, "wifi-last.json"); } }
     string NameBookFile { get { return Path.Combine(DataDir, "device-names.json"); } }
     string SettingsFile { get { return Path.Combine(DataDir, "settings.json"); } }
     string PendingFile { get { return Path.Combine(DataDir, "restore-pending.json"); } }
     string CapFile { get { return Path.Combine(DataDir, "device-capabilities.json"); } }
+    string BaselineFile { get { return Path.Combine(DataDir, "dpi-baselines.json"); } }
+
+    // ── 高 DPI 换算 ──
+    // 进程声明了 PerMonitorV2（见 app.manifest）之后，WinForms 里的数字就是物理像素。
+    // 构造函数那组尺寸是按 96dpi 设计的，不乘回比例，150% 缩放下窗口会凭空小一号。
+    // 注：这里用系统 DPI 而不是 AutoScaleMode.Dpi —— 实测后者在 .NET Framework 上
+    // 只会把 AutoScaleDimensions 记成当前 DPI、并不会真的放大窗体。
+    const int DesignWidth = 1180, DesignHeight = 780, DesignMinWidth = 1020, DesignMinHeight = 640;
+    [DllImport("user32.dll")] static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
+    [DllImport("user32.dll")] static extern bool AreDpiAwarenessContextsEqual(IntPtr a, IntPtr b);
+    // PER_MONITOR_AWARE_V2 的上下文句柄是 -4；只有拿到它才说明 app.manifest 真的嵌进 exe 了。
+    static string AwarenessName(IntPtr h)
+    {
+        try
+        {
+            IntPtr ctx = GetWindowDpiAwarenessContext(h);
+            if (AreDpiAwarenessContextsEqual(ctx, new IntPtr(-4))) return "PerMonitorV2";
+            if (AreDpiAwarenessContextsEqual(ctx, new IntPtr(-3))) return "PerMonitor";
+            if (AreDpiAwarenessContextsEqual(ctx, new IntPtr(-2))) return "System";
+            if (AreDpiAwarenessContextsEqual(ctx, new IntPtr(-1))) return "Unaware(清单失效!)";
+            return "ctx=" + ctx.ToInt64();
+        }
+        catch { return "未知"; }
+    }
+    static double ScaleOf(uint dpi) { return dpi >= 96 ? dpi / 96.0 : 1.0; }
+    // 优先用窗口所在显示器的 DPI（PerMonitorV2 下跨屏拖动会变），拿不到再退回系统 DPI。
+    static double DpiScale() { return DpiScaleFor(IntPtr.Zero); }
+    static double DpiScaleFor(IntPtr hwnd)
+    {
+        if (hwnd != IntPtr.Zero)
+        {
+            try
+            {
+                uint d = GetDpiForWindow(hwnd);
+                if (d >= 96) return ScaleOf(d);
+            }
+            catch { }
+        }
+        try
+        {
+            uint d = GetDpiForSystem();
+            if (d >= 96) return ScaleOf(d);
+        }
+        catch { /* Win10 1607 以前没有这个 API，退回 GDI 取系统 DPI */ }
+        try
+        {
+            using (var g = Graphics.FromHwnd(IntPtr.Zero))
+            {
+                float d = g.DpiX;
+                if (d >= 96) return ScaleOf((uint)d);
+            }
+        }
+        catch { }
+        return 1.0;
+    }
 
     // 设备能改到多大没有系统接口可查，只能设一次再读回实际值。
     // 第一次用放大档就是这个过程，顺手记下来，之后直接显示，不用再试探。
@@ -94,9 +155,13 @@ public class MainForm : Form
         public int pid;
         public string deviceId, deviceName, mode, size, startedAt;
         public bool scaled;   // 这一路启动前改过设备分辨率，收尾时要还原
+        public int displayId; // 虚拟屏这一路占用的 display id，拉回时要用
+        public string appPkg = "";
+        public bool stolen;   // 应用被手机侧打开，虚拟屏已经空了
     }
     static readonly List<CastSession> Sessions = new List<CastSession>();
     static readonly object SessionLock = new object();
+    CastSession lastSpawned;
 
     bool RestoreOnClose()
     {
@@ -154,10 +219,12 @@ public class MainForm : Form
         }
     }
 
-    object SessionsList()
+    async Task<object> SessionsList()
     {
         var list = new List<object>();
-        foreach (var s in LiveSessions())
+        var live = LiveSessions();
+        await DetectStolenApps(live);
+        foreach (var s in live)
             list.Add(new Dictionary<string, object> {
                 { "pid", s.pid },
                 { "deviceId", s.deviceId },
@@ -165,8 +232,88 @@ public class MainForm : Form
                 { "mode", s.mode },
                 { "size", s.size },
                 { "startedAt", s.startedAt },
-                { "scaled", s.scaled } });
+                { "scaled", s.scaled },
+                { "displayId", s.displayId },
+                { "appPkg", s.appPkg },
+                { "appName", AppNote(s.appPkg) },
+                { "stolen", s.stolen } });
         return list;
+    }
+
+    // 手机侧点开同一个应用时，系统会把那个 task 挪到主屏，虚拟屏就只剩壁纸。
+    // 判据要收紧：我们这块屏上确实没应用了，而且这个应用正主屏在前台，才算被抢走；
+    // 否则用户在虚拟屏上换了别的应用，会被误报。
+    async Task DetectStolenApps(List<CastSession> live)
+    {
+        var watch = live.Where(s => s.displayId > 0 && s.appPkg.Length > 0).ToList();
+        if (watch.Count == 0) return;
+        foreach (var grp in watch.GroupBy(s => s.deviceId))
+        {
+            var focus = await DisplayFocusMap(grp.Key);
+            if (focus == null) continue;
+            string mainPkg;
+            focus.TryGetValue(0, out mainPkg);
+            foreach (var s in grp)
+            {
+                string ours;
+                focus.TryGetValue(s.displayId, out ours);
+                bool empty = string.IsNullOrEmpty(ours) || ours.IndexOf("launcher", StringComparison.OrdinalIgnoreCase) >= 0;
+                s.stolen = empty && string.Equals(mainPkg, s.appPkg, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    // 每块屏当前在前台的应用包名
+    async Task<Dictionary<int, string>> DisplayFocusMap(string id)
+    {
+        var r = await Adb(id, "shell", "dumpsys", "window", "displays");
+        if (!r.ok) return null;
+        var map = new Dictionary<int, string>();
+        int cur = -1;
+        foreach (var line in r.text.Split('\n'))
+        {
+            var d = System.Text.RegularExpressions.Regex.Match(line, "mDisplayId=([0-9]+)");
+            if (d.Success) { int v; if (int.TryParse(d.Groups[1].Value, out v)) cur = v; continue; }
+            if (cur < 0) continue;
+            var f = System.Text.RegularExpressions.Regex.Match(line, @"mFocusedApp=ActivityRecord\{[0-9a-fA-F]+ u\d+ ([A-Za-z0-9_.]+)/");
+            if (f.Success) map[cur] = f.Groups[1].Value;
+            else if (line.IndexOf("mFocusedApp=null", StringComparison.OrdinalIgnoreCase) >= 0) map[cur] = "";
+        }
+        return map;
+    }
+
+    // am 的写法各家系统不一致：这台实测只认 "--display <id>"，别家可能只认 "--display-id=<id>"，两种都试
+    async Task<Sh> StartOnDisplay(string id, int disp, string comp)
+    {
+        var r = await Adb(id, "shell", "am", "start", "--display", disp.ToString(), "-n", comp);
+        if (r.text.IndexOf("Unknown option", StringComparison.OrdinalIgnoreCase) >= 0)
+            r = await Adb(id, "shell", "am", "start", "--display-id=" + disp, "-n", comp);
+        return r;
+    }
+
+    async Task<object> PullBackApp(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id"), pkg = Ps(p, "pkg");
+        int disp;
+        if (!int.TryParse(Ps(p, "displayId"), out disp) || disp <= 0) return Err("没指定要拉回哪块虚拟屏");
+        if (pkg.Length == 0) return Err("没指定要拉回哪个应用");
+        string act;
+        var cache = LoadAppsCache();
+        if (!cache.TryGetValue(pkg, out act) || act.Length == 0) act = await ResolveActivity(id, pkg);
+        if (act.Length == 0) return Err("没解析到「" + AppNote(pkg) + pkg + "」的启动入口，回设备应用列表点「刷新列表」再试");
+        var r = await StartOnDisplay(id, disp, pkg + act);
+        string t = (r.text ?? "").Trim();
+        if (!r.ok || t.IndexOf("Error", StringComparison.OrdinalIgnoreCase) >= 0
+                   || t.IndexOf("Exception", StringComparison.OrdinalIgnoreCase) >= 0
+                   || t.IndexOf("Unknown option", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            Log("拉回失败 " + pkg + " → 屏 " + disp + ": " + t.Replace("\r", " ").Replace("\n", " "));
+            return Err("拉回失败：" + (t.Length > 160 ? t.Substring(0, 160) : t));
+        }
+        foreach (var s in LiveSessions())
+            if (s.deviceId == id && s.displayId == disp) { s.stolen = false; break; }
+        Log("拉回 " + pkg + " → 屏 " + disp);
+        return new Dictionary<string, object> { { "ok", true }, { "text", t } };
     }
 
     async Task<object> CloseSession(Dictionary<string, object> p)
@@ -283,15 +430,19 @@ public class MainForm : Form
     public MainForm()
     {
         Text = "水月清影 ScreenZoom";
-        Width = 1180; Height = 780;
-        MinimumSize = new Size(1020, 640);
+        // 界面只有一个 Dock=Fill 的 WebView2，页面内缩放由 Chromium 按当前 DPI 处理；
+        // 关掉 WinForms 自动缩放（见上），改成下面手动乘 DPI 比例。
+        AutoScaleMode = AutoScaleMode.None;
+        double dpiScale = DpiScale();
+        startupScale = dpiScale;
+        ApplyScale(dpiScale);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(246, 247, 248);
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
         engineDir = FindEngine();
         if (engineDir != null) { scrcpyExe = Path.Combine(engineDir, "scrcpy.exe"); adbExe = Path.Combine(engineDir, "adb.exe"); }
-        Log("启动 engine=" + (engineDir ?? "NULL") + " exe=" + AppDir());
+        Log("启动 engine=" + (engineDir ?? "NULL") + " exe=" + AppDir() + " dpi=" + dpiScale);
 
         wv = new WebView2 { Dock = DockStyle.Fill };
         Controls.Add(wv);
@@ -358,8 +509,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.1.3";
-    public const int AppVersionCode = 4;
+    public const string AppVersion = "0.2.0";
+    public const int AppVersionCode = 5;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -413,13 +564,197 @@ public class MainForm : Form
         object v; return d.TryGetValue(k, out v) && v != null ? v.ToString() : def;
     }
 
+    // 按 DPI 比例把 96dpi 设计尺寸换算成物理像素
+    void ApplyScale(double scale)
+    {
+        Width = (int)Math.Round(DesignWidth * scale);
+        Height = (int)Math.Round(DesignHeight * scale);
+        MinimumSize = new Size((int)Math.Round(DesignMinWidth * scale), (int)Math.Round(DesignMinHeight * scale));
+    }
+
+    // 跨屏时只重算下限：系统给的建议矩形已经按窗口当前尺寸换算过，
+    // 若在这里再 ApplyScale 会把用户手动拖大的窗口打回设计尺寸。
+    void ApplyMinSize(double scale)
+    {
+        MinimumSize = new Size((int)Math.Round(DesignMinWidth * scale), (int)Math.Round(DesignMinHeight * scale));
+    }
+
+    double startupScale = 1.0;
+    // 构造时只能拿到系统 DPI，而窗口真正落在哪块屏要到显示后才定（多屏不同缩放时
+    // 可能落在非主屏）。首次显示后按窗口实际 DPI 校正一次尺寸并在这块屏上居中，
+    // 否则副屏缩放更大时窗口会凭空小一号。只在没被 WM_DPICHANGED 处理过时校正。
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        try
+        {
+            double s = DpiScaleFor(Handle);
+            // 常驻自检：界面发糊几乎只有两种原因——清单没生效（Unaware）或尺寸没按所在屏缩放。
+            // 这行日志把两者一次性写清，换屏/改缩放/别人机器报糊时看一眼就能定位，不必再编译探针。
+            var scr = Screen.FromHandle(Handle);
+            Log("UI 自检 感知=" + AwarenessName(Handle) + " 窗口dpi=" + (int)(s * 96)
+                + " 尺寸=" + Width + "x" + Height + " 期望=" + (int)Math.Round(DesignWidth * s) + "x" + (int)Math.Round(DesignHeight * s)
+                + " 屏=" + scr.DeviceName + " " + scr.Bounds.Width + "x" + scr.Bounds.Height
+                + (scr.Primary ? "(主)" : "(副)"));
+            if (Math.Abs(s - startupScale) < 0.01) return;
+            startupScale = s;
+            var b = scr.Bounds;
+            SuspendLayout();
+            ApplyScale(s);
+            Left = b.X + Math.Max(0, (b.Width - Width) / 2);
+            Top = b.Y + Math.Max(0, (b.Height - Height) / 2);
+            Log("UI 按所在屏缩放校正 dpi=" + s);
+        }
+        catch (Exception ex) { Log("OnShown 缩放校正失败: " + ex.Message); }
+        finally { ResumeLayout(true); }
+    }
+
+    const int WM_DPICHANGED = 0x02E0;
+    // PerMonitorV2 下窗口拖到不同缩放的显示器会收到这条消息。
+    // 不处理的话 MinimumSize 停在旧 DPI，窗口在新屏上还是原来的物理尺寸，看着突然大一号（或小一号）。
+    // 顺序必须是先按新 DPI 重设下限、再采纳 LParam 的建议矩形：建议矩形本身也会被
+    // MinimumSize 截断，若先设矩形就设下限，从大缩放屏移回小缩放屏时窗口会被旧下限顶住缩不回去。
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_DPICHANGED)
+        {
+            double scale = ScaleOf((uint)(m.WParam.ToInt32() & 0xFFFF));
+            startupScale = scale;   // 已按所在屏处理过，OnShown 不必再校正
+            try
+            {
+                var sug = (WinRect)Marshal.PtrToStructure(m.LParam, typeof(WinRect));
+                SuspendLayout();
+                ApplyMinSize(scale);
+                DesktopBounds = new Rectangle(sug.left, sug.top, sug.right - sug.left, sug.bottom - sug.top);
+                Log("UI 跨屏 dpi=" + (int)(scale * 96) + " 尺寸=" + Width + "x" + Height);
+            }
+            catch (Exception ex) { Log("DPICHANGED 失败: " + ex.Message); }
+            finally { ResumeLayout(true); }
+        }
+        base.WndProc(ref m);
+    }
+
+    // ── 显示器枚举：拿「物理像素」的显示器几何 ──
+    // 进程已是 PerMonitorV2（见 app.manifest），此时 GetMonitorInfo 直接返回真实物理几何。
+    // 仍走 Win32 而不用 Screen.Bounds，是因为要顺带取到显示器名与设备路径给前端下拉框用；
+    // 枚举期间临时把线程切到 PER_MONITOR_AWARE_V2，是为了万一清单没生效（比如被外部方式启动的
+    // 旧 exe）也能读到正确值，读完切回，不影响主窗口的 DPI 行为。
+    [StructLayout(LayoutKind.Sequential)] struct WinRect { public int left, top, right, bottom; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct MonitorInfoEx
+    {
+        public int cbSize;
+        public WinRect rcMonitor; public WinRect rcWork; public int dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DisplayDevice
+    {
+        public int cb;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public int StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 50)] public string DeviceKey;
+    }
+    delegate bool EnumMonProc(IntPtr h, IntPtr hdc, ref WinRect r, IntPtr data);
+
+    [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+    [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, EnumMonProc cb, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetMonitorInfo(IntPtr h, ref MonitorInfoEx mi);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplayDevices(string dev, int i, ref DisplayDevice dd, int flags);
+
+    class MonitorInfo
+    {
+        public int index;
+        public string device = "";
+        public string name = "";
+        public int x, y, w, h, workX, workY, workW, workH;
+        public bool primary;
+        public Dictionary<string, object> ToJson()
+        {
+            return new Dictionary<string, object> {
+                { "index", index }, { "device", device }, { "name", name },
+                { "x", x }, { "y", y }, { "w", w }, { "h", h },
+                { "workX", workX }, { "workY", workY }, { "workW", workW }, { "workH", workH },
+                { "primary", primary } };
+        }
+    }
+
+    // Win10 1703+ 才有；老系统返回 IntPtr.Zero 表示不支持，调用方退回 WinForms 逻辑值
+    static bool TrySetThreadDpiAware(out IntPtr prev, IntPtr want)
+    {
+        prev = IntPtr.Zero;
+        try
+        {
+            prev = SetThreadDpiAwarenessContext(want);
+            return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+        catch (DllNotFoundException) { return false; }
+    }
+
+    static List<MonitorInfo> EnumMonitors()
+    {
+        var list = new List<MonitorInfo>();
+        IntPtr prev;
+        // -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        bool switched = TrySetThreadDpiAware(out prev, new IntPtr(-4));
+        try
+        {
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hm, IntPtr hdc, ref WinRect r, IntPtr d) =>
+            {
+                var mi = new MonitorInfoEx();
+                mi.cbSize = Marshal.SizeOf(typeof(MonitorInfoEx));
+                mi.szDevice = new string('\0', 32);
+                if (!GetMonitorInfo(hm, ref mi)) return true;
+                var m = new MonitorInfo
+                {
+                    device = (mi.szDevice ?? "").TrimEnd('\0'),
+                    x = mi.rcMonitor.left, y = mi.rcMonitor.top,
+                    w = mi.rcMonitor.right - mi.rcMonitor.left,
+                    h = mi.rcMonitor.bottom - mi.rcMonitor.top,
+                    workX = mi.rcWork.left, workY = mi.rcWork.top,
+                    workW = mi.rcWork.right - mi.rcWork.left,
+                    workH = mi.rcWork.bottom - mi.rcWork.top,
+                    primary = (mi.dwFlags & 1) != 0
+                };
+                var dd = new DisplayDevice(); dd.cb = Marshal.SizeOf(typeof(DisplayDevice));
+                if (EnumDisplayDevices(m.device, 0, ref dd, 0)) m.name = dd.DeviceString ?? "";
+                list.Add(m);
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { list.Clear(); }
+        finally { if (switched && prev != IntPtr.Zero) { try { SetThreadDpiAwarenessContext(prev); } catch { } } }
+
+        // 按桌面排布顺序（先左后右、再上后下）编号，前端下拉框与「副屏」说法才对得上
+        list = list.OrderBy(m => m.x).ThenBy(m => m.y).ToList();
+        for (int i = 0; i < list.Count; i++) list[i].index = i;
+        return list;
+    }
+
+    Dictionary<string, object> MonitorJson()
+    {
+        var list = EnumMonitors();
+        var chosen = list.FirstOrDefault(m => m.primary) ?? list.FirstOrDefault();
+        if (chosen == null)
+        {
+            var b = Screen.PrimaryScreen.Bounds;
+            chosen = new MonitorInfo { index = 0, w = b.Width, h = b.Height, x = b.X, y = b.Y, primary = true, name = "主显示器" };
+        }
+        return new Dictionary<string, object> {
+            { "w", chosen.w }, { "h", chosen.h }, { "x", chosen.x }, { "y", chosen.y },
+            { "index", chosen.index }, { "name", chosen.name }, { "device", chosen.device },
+            { "count", list.Count },
+            { "monitors", list.Select(m => m.ToJson()).ToList() } };
+    }
+
     async Task<object> Dispatch(string action, Dictionary<string, object> p)
     {
         switch (action)
         {
-            case "monitor":
-                var b = Screen.PrimaryScreen.Bounds;
-                return new Dictionary<string, object> { { "w", b.Width }, { "h", b.Height } };
+            case "monitor": return MonitorJson();
             case "scan": return await Scan();
             case "state": return ReadJson(StateFile);
             case "recent-apps": return ReadJson(RecentFile) ?? new List<object>();
@@ -447,13 +782,18 @@ public class MainForm : Form
             case "wifi-disconnect": return await WifiDisconnect(p);
             case "wifi-connect": return await WifiConnect(p);
             case "wifi-forget": return WifiForget(p);
-            case "sessions": return SessionsList();
+            case "sessions": return await SessionsList();
+            case "vd-pullback": return await PullBackApp(p);
+            case "conn-diag": return await ConnectionDiag(p);
+            case "usb-to-wireless": return await UsbToWireless(p);
             case "close-session": return await CloseSession(p);
             case "close-device": return await CloseDevice(p);
             case "settings": return GetSettings();
             case "set-restore": return SetRestore(p);
             case "wifi-restart-adb": return await RestartAdb();
             case "reconnect-last": return await ReconnectLast();
+            case "wifi-relocate": return await RelocateStart(p);
+            case "wifi-relocate-poll": return RelocatePoll(p);
         }
         return Err("未知操作 " + action);
     }
@@ -467,6 +807,16 @@ public class MainForm : Form
         if (!string.IsNullOrEmpty(id)) { a.Add("-s"); a.Add(id); }
         a.AddRange(args);
         return await Run(adbExe, a);
+    }
+
+    // 带自定义超时的 adb 调用：探活这类短命令不能沿用默认 15 秒，否则一次扫描会拖很久
+    async Task<Sh> AdbT(int ms, string id, params string[] args)
+    {
+        var a = new List<string>();
+        if (adbExe == null) return new Sh { ok = false, text = "没找到 adb" };
+        if (!string.IsNullOrEmpty(id)) { a.Add("-s"); a.Add(id); }
+        a.AddRange(args);
+        return await Run(adbExe, a, ms);
     }
 
     async Task<byte[]> AdbRaw(string id, params string[] args)
@@ -539,6 +889,27 @@ public class MainForm : Form
         if (Ps(p, "borderless") == "1") a.Add("--window-borderless");
         int ww;
         if (int.TryParse(Ps(p, "windowWidth"), out ww) && ww > 0) a.Add("--window-width=" + ww);
+        AddMonitorPos(a, p);
+    }
+
+    // 投到指定那块屏：scrcpy 全屏是跟着「窗口所在那块屏」走的，所以先把窗口原点摆到目标显示器上。
+    // 坐标用 EnumMonitors 的物理像素 —— scrcpy 自身是 PerMonitorV2，只认物理坐标。
+    static void AddMonitorPos(List<string> a, Dictionary<string, object> p)
+    {
+        int mi;
+        if (!int.TryParse(Ps(p, "monIndex", "-1"), out mi) || mi < 0) return;
+        var target = EnumMonitors().FirstOrDefault(m => m.index == mi);
+        if (target == null) return;
+        // SDL 收的是「客户区」原点，系统把边框和标题栏算在外面，实测窗口外框会往左上偏出十几到几十像素。
+        // 预留这点余量，免得带负 Y 的副屏把标题栏顶出屏幕点不到，也免得窗口左侧漏到隔壁屏上。
+        // scrcpy 内部用 int16 存这个坐标，超出范围会绕回，所以夹一下（超大虚拟桌面才会碰到）。
+        a.Add("--window-x=" + Clamp16(target.x + 30));
+        a.Add("--window-y=" + Clamp16(target.y + 70));
+    }
+
+    static int Clamp16(int v)
+    {
+        return v < -32767 ? -32767 : (v > 32767 ? 32767 : v);
     }
 
     static string EscapeArg(string s)
@@ -574,6 +945,25 @@ public class MainForm : Form
         // 每台设备的几条查询同时发，逐台串行会让首屏等上十几秒
         var probes = ids.Select(async id =>
         {
+            // 无线设备：adb devices 里的条目可能是「假在线」——连接早断了但状态还写着 device，
+            // 光看状态字段永远显示已连接。主动发一条短命令探活，探不通就判离线并 disconnect，
+            // 让这条陈旧条目从 adb 里彻底消失，后面自动重连才不会一直对着死地址空试。
+            if (id.Contains(":") && !id.StartsWith("emulator"))
+            {
+                var alive = await AdbT(3000, id, "shell", "echo", "ok");
+                // 第一次探不通再补一次：正在投屏时 adb 可能短暂排队，一次超时不能直接判死
+                if (alive == null || !Clean(alive.text).Equals("ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Task.Delay(400);
+                    alive = await AdbT(3000, id, "shell", "echo", "ok");
+                }
+                if (alive == null || !Clean(alive.text).Equals("ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log("device " + id + " 探活失败判离线: " + Clean(alive == null ? "" : alive.text));
+                    try { await Run(adbExe, new[] { "disconnect", id }, 4000); } catch { }
+                    return null;
+                }
+            }
             var name = RegexVal(r.text, "(?m)^" + System.Text.RegularExpressions.Regex.Escape(id) + @"\s.*?model:(\S+)") ?? id;
             var tModel = Adb(id, "shell", "getprop", "ro.product.model");
             var tRel = Adb(id, "shell", "getprop", "ro.build.version.release");
@@ -591,10 +981,12 @@ public class MainForm : Form
                 { "rot", RotVal(rot.text) }
             };
             foreach (var kv in wm) d[kv.Key] = kv.Value;
+            RememberBaseline(id, wm);   // 顺手记下设备当前的生效分辨率/密度，还原时写回这个值
             Log("device " + id + " " + d["name"] + " " + d["currentSize"]);
             return (object)d;
         }).ToList();
-        var list = new List<object>(await Task.WhenAll(probes));
+        // 探活失败的无线条目返回 null，这里过滤掉，不进设备列表
+        var list = new List<object>((await Task.WhenAll(probes)).Where(x => x != null));
         string ver = "";
         if (scrcpyExe != null)
         {
@@ -638,11 +1030,11 @@ public class MainForm : Form
     {
         var a = new List<string> { "-s", Ps(p, "id"), "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid" };
-        if (Ps(p, "fullscreen") == "1") a.Add("--fullscreen");
+        if (Ps(p, "fullscreen") == "1") { a.Add("--fullscreen"); AddMonitorPos(a, p); }
         else AddWindowOpts(a, p);
         return Spawn(a, Ps(p, "id"),
             Ps(p, "fullscreen") == "1" ? "镜像 · 全屏" : "镜像",
-            Ps(p, "size"), false);
+            Ps(p, "size"), false, "");
     }
 
     async Task<object> LaunchWindow(Dictionary<string, object> p)
@@ -655,13 +1047,15 @@ public class MainForm : Form
         // 视频流保持虚拟屏原分辨率，电脑放不下时只缩窗口，不降清晰度
         AddWindowOpts(a, p);
         string app = Ps(p, "app");
+        string appPkg = "";
         if (app.Length > 0)
         {
             bool isPkg = System.Text.RegularExpressions.Regex.IsMatch(app, "^[A-Za-z0-9_.]+$") && app.Contains(".");
             a.Add("--start-app=" + (isPkg ? app : "?" + app));
             if (!isPkg) Remember(app);
+            else { appPkg = app; CountLaunch(app); }      // 应用列表按这个次数把常用的排到前面
         }
-        var res = Spawn(a, id, "虚拟屏", Ps(p, "size", "1280x720/240").Split('/')[0], false);
+        var res = Spawn(a, id, "虚拟屏", Ps(p, "size", "1280x720/240").Split('/')[0], false, appPkg);
         var dict = res as Dictionary<string, object>;
         if (dict != null && dict.ContainsKey("ok") && Convert.ToBoolean(dict["ok"]))
         {
@@ -674,7 +1068,11 @@ public class MainForm : Form
                 var diff = after.Except(before).ToList();
                 if (diff.Count > 0) disp = diff.Max();
             }
-            if (disp > 0) dict["displayId"] = disp;
+            if (disp > 0)
+            {
+                dict["displayId"] = disp;
+                if (lastSpawned != null) lastSpawned.displayId = disp;   // 记住归属，掉屏时才知道该往哪块屏拉回
+            }
         }
         return res;
     }
@@ -687,7 +1085,12 @@ public class MainForm : Form
         var wh = phys.Split('x');
         if (wh.Length != 2) return Err("读不到设备原始分辨率");
         int pw = int.Parse(wh[0]), ph = int.Parse(wh[1]);
-        int dpi0 = (int)info["physicalDpi"];
+        // 基准用「当前生效密度」而不是出厂密度：用户在系统设置里选的显示大小挡位
+        // 在多数 ROM 上就是 wm density 覆盖值，用它缩放，放大倍数才跟用户看到的界面大小一致
+        int dpi0 = (int)info["currentDpi"];
+        if (dpi0 <= 0) dpi0 = (int)info["physicalDpi"];
+        if (dpi0 <= 0) return Err("读不到设备显示密度");
+        RememberBaseline(id, info);   // 必须在改任何东西之前存快照
         int monW = int.Parse(Ps(p, "monW", "1920")), monH = int.Parse(Ps(p, "monH", "1080"));
         string kind = Ps(p, "kind", "factor");
         string devKey = LookupName(LoadNames(), "", id);
@@ -756,7 +1159,9 @@ public class MainForm : Form
 
         var a = new List<string> { "-s", id, "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid", "--fullscreen" };
-        var res = Spawn(a, id, "放大", w + "×" + h, true);
+        // 全屏档由 scrcpy 铺满「窗口所在那块屏」，所以先把窗口原点摆到用户选的目标显示器
+        AddWindowOpts(a, p);
+        var res = Spawn(a, id, "放大", w + "×" + h, true, "");
         var dict = res as Dictionary<string, object>;
         if (dict != null)
         {
@@ -768,9 +1173,10 @@ public class MainForm : Form
         return res;
     }
 
-    object Spawn(List<string> a, string id, string mode, string size, bool scaled)
+    object Spawn(List<string> a, string id, string mode, string size, bool scaled, string appPkg)
     {
         if (scrcpyExe == null) return Err("没找到 scrcpy.exe");
+        Log("spawn " + mode + " " + id + " :: " + string.Join(" ", a));
         try
         {
             var psi = new ProcessStartInfo(scrcpyExe, string.Join(" ", a.Select(EscapeArg)))
@@ -786,9 +1192,11 @@ public class MainForm : Form
                 pid = pr.Id, deviceId = id,
                 deviceName = LookupName(LoadNames(), "", id),
                 mode = mode, size = size, scaled = scaled,
+                appPkg = appPkg ?? "",
                 startedAt = DateTime.Now.ToString("HH:mm")
             };
             lock (SessionLock) Sessions.Add(sess);
+            lastSpawned = sess;
             int n = 0;
             // 开头 40 行走日志；同时留一份环形缓冲，退出时把最后几行打出来——
             // 断连原因通常只在最后几行，不留在缓冲里就查不到
@@ -861,29 +1269,110 @@ public class MainForm : Form
 
     void SaveState(string id, string sizeOverride, string dpiOverride)
     {
+        // 无线端口每次重连都会变，只记 ip 才能端口换了还认得出是同一台机器
         WriteJson(StateFile, new Dictionary<string, object> {
-            { "id", id }, { "sizeOverride", sizeOverride }, { "dpiOverride", dpiOverride } });
+            { "id", id }, { "host", HostOf(id) },
+            { "sizeOverride", sizeOverride }, { "dpiOverride", dpiOverride } });
+    }
+
+    static string HostOf(string id)
+    {
+        int c = (id ?? "").LastIndexOf(':');
+        return c > 0 ? id.Substring(0, c) : (id ?? "");
+    }
+
+    static string BaselineKey(string id)
+    {
+        return (id ?? "").Contains(":") ? HostOf(id) : (id ?? "");
+    }
+
+    Dictionary<string, object> LoadBaselines()
+    {
+        return ReadJson(BaselineFile) as Dictionary<string, object> ?? new Dictionary<string, object>();
+    }
+
+    // 通用做法：在动手改设备参数之前，先把「设备当时实际生效的分辨率/密度」存一份快照。
+    // 还原时写回这个快照，而不是 wm density reset —— reset 的语义是回到出厂默认，
+    // 永远不等于回到用户在系统设置里选的挡位（各厂商 ROM 存挡位的方式都不一样，
+    // 靠猜厂商私有属性既不通用也不可靠，快照法只问设备本身，任何 ROM 都成立）。
+    void RememberBaseline(string id, Dictionary<string, object> wm)
+    {
+        if (string.IsNullOrEmpty(id) || wm == null) return;
+        // 已经有未还原的改动时不能覆盖：那时读到的可能是我们自己设的值
+        if (File.Exists(StateFile) || File.Exists(PendingFile)) return;
+        try
+        {
+            var entry = new Dictionary<string, object> {
+                { "size", Convert.ToString(wm["currentSize"]) },
+                { "dpi", Convert.ToString(wm["currentDpi"]) },
+                { "physSize", Convert.ToString(wm["physicalSize"]) },
+                { "physDpi", Convert.ToString(wm["physicalDpi"]) },
+                { "ovSize", (bool)wm["hadSizeOverride"] ? Convert.ToString(wm["currentSize"]) : "" },
+                { "ovDpi", (bool)wm["hadDpiOverride"] ? Convert.ToString(wm["currentDpi"]) : "" }
+            };
+            var all = LoadBaselines();
+            object oldO;
+            // 首次没有这张表，取值会抛 KeyNotFoundException，必须先试取
+            all.TryGetValue(BaselineKey(id), out oldO);
+            var old = oldO as Dictionary<string, object>;
+            // 和上次记的一样就不动盘：设备列表每几秒扫一次，没必要跟着一直写文件
+            if (old != null && Convert.ToString(old["size"]) == Convert.ToString(entry["size"])
+                && Convert.ToString(old["dpi"]) == Convert.ToString(entry["dpi"])
+                && Convert.ToString(old["physSize"]) == Convert.ToString(entry["physSize"])
+                && Convert.ToString(old["physDpi"]) == Convert.ToString(entry["physDpi"])
+                && Convert.ToString(old["ovSize"]) == Convert.ToString(entry["ovSize"])
+                && Convert.ToString(old["ovDpi"]) == Convert.ToString(entry["ovDpi"])) return;
+            entry["at"] = DateTime.Now.ToString("HH:mm:ss");
+            all[BaselineKey(id)] = entry;
+            WriteJson(BaselineFile, all);
+        }
+        catch (Exception ex) { Log("记录显示基准失败: " + ex.Message); }
+    }
+
+    Dictionary<string, object> BaselineFor(string id)
+    {
+        var all = LoadBaselines();
+        object o;
+        all.TryGetValue(BaselineKey(id), out o);
+        return o as Dictionary<string, object>;
+    }
+
+    static string Tv(Dictionary<string, object> d, string k)
+    {
+        object v;
+        return d != null && d.TryGetValue(k, out v) && v != null ? v.ToString() : "";
+    }
+
+    // 还原目标：本次记录 > 历史快照里的覆盖值 > 历史快照里的生效值 > reset
+    static string PickRestore(string recorded, Dictionary<string, object> bl, string ovKey, string curKey, string physKey)
+    {
+        if (!string.IsNullOrEmpty(recorded) && recorded != "null") return recorded;
+        if (bl != null)
+        {
+            string ov = Tv(bl, ovKey);
+            if (!string.IsNullOrEmpty(ov) && ov != "null") return ov;
+            string cur = Tv(bl, curKey), phys = Tv(bl, physKey);
+            if (!string.IsNullOrEmpty(cur) && cur != "null" && cur != phys) return cur;
+        }
+        return "reset";
     }
 
     async Task<object> Restore(Dictionary<string, object> p)
     {
         string id = Ps(p, "id");
         var st = ReadJson(StateFile) as Dictionary<string, object>;
-        if (st != null && Convert.ToString(st["id"]) == id)
-        {
-            string so = Convert.ToString(st["sizeOverride"]), dobj = Convert.ToString(st["dpiOverride"]);
-            var r1 = await Adb(id, "shell", "wm", "size", string.IsNullOrEmpty(so) || so == "null" ? "reset" : so);
-            var r2 = await Adb(id, "shell", "wm", "density", string.IsNullOrEmpty(dobj) || dobj == "null" ? "reset" : dobj);
-            // 设备没响应就别删记录：留着，等重连回来再补还原
-            if (r1.ok && r2.ok) { try { File.Delete(StateFile); } catch { } }
-            else return Err("设备没响应，还原记录已保留，重连后会自动再试");
-        }
-        else
-        {
-            var r1 = await Adb(id, "shell", "wm", "size", "reset");
-            var r2 = await Adb(id, "shell", "wm", "density", "reset");
-            if (!r1.ok || !r2.ok) return Err("设备没响应，没能还原设备原始分辨率");
-        }
+        string sid = Tv(st, "id");
+        string shost = Tv(st, "host");
+        // 端口轮换后完整地址会变，同 ip 也算同一台设备
+        bool same = st != null && (sid == id || (!string.IsNullOrEmpty(shost) && shost == HostOf(id)));
+        var bl = BaselineFor(id);
+        string sizeArg = PickRestore(same ? Tv(st, "sizeOverride") : "", bl, "ovSize", "size", "physSize");
+        string dpiArg = PickRestore(same ? Tv(st, "dpiOverride") : "", bl, "ovDpi", "dpi", "physDpi");
+        Log("还原 " + id + " -> size=" + sizeArg + " density=" + dpiArg);
+        var r1 = await Adb(id, "shell", "wm", "size", sizeArg);
+        var r2 = await Adb(id, "shell", "wm", "density", dpiArg);
+        if (!r1.ok || !r2.ok) return Err("设备没响应，没能还原设备分辨率与显示大小");
+        if (same) { try { File.Delete(StateFile); } catch { } }   // 设备没响应时记录要留着，重连后再补
         return await ReadWm(id);
     }
 
@@ -1006,7 +1495,29 @@ public class MainForm : Form
         Log("wifi-discover 待连接 " + found.Count + " 台（已连接 IP: " + string.Join(",", connIps) + "；广播条目 " + rawEntries + " 条，入列 " + byIp.Count + " 台；常用地址探了 " + todo.Count + " 个）");
         if (byIp.Count == 0)
             Log("wifi-discover 无广播，mdns 原始输出: " + (rawSample.Length > 0 ? rawSample.Replace("\r", "").Replace("\n", " | ") : "(空)"));
+        AutoRelocate(found, byIp.Count);
         return found;
+    }
+
+    // 广播一条都收不到、常用地址却在线只是端口连不上：几乎可以断定是端口换了。
+    // 这里自己发起一次后台找回，每台 IP 五分钟冷却，避免反复扫。
+    Dictionary<string, DateTime> relocAutoAt = new Dictionary<string, DateTime>();
+    void AutoRelocate(List<object> found, int mdnsCount)
+    {
+        if (mdnsCount > 0) return;
+        if (reloc != null && reloc.running) return;
+        var failIp = found.OfType<Dictionary<string, object>>()
+            .Where(f => "known".Equals(Convert.ToString(f["kind"])) && "fail".Equals(Convert.ToString(f["state"])))
+            .Select(f => Convert.ToString(f["addr"]).Split(':')[0])
+            .FirstOrDefault();
+        if (failIp == null) return;
+        DateTime last;
+        if (relocAutoAt.TryGetValue(failIp, out last) && (DateTime.Now - last).TotalMinutes < 5) return;
+        relocAutoAt[failIp] = DateTime.Now;
+        var st = new RelocateState { ip = failIp, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在自动找回新端口…" };
+        reloc = st;
+        var _ = RelocateLoop(st);
+        Log("relocate 自动触发 " + failIp);
     }
 
     // 探一个常用地址：先确认机器在不在这个网，在才试连，避免干等超时
@@ -1037,7 +1548,7 @@ public class MainForm : Form
     {
         string t = raw ?? "";
         if (t.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0)
-            return "端口不接受连接：无线调试可能已关掉，或端口换了，去手机页面上看新端口";
+            return "端口不接受连接：无线调试的端口每次开关都会换，点「定位端口」让程序自动找回新端口";
         if (t.IndexOf("authenticat", StringComparison.OrdinalIgnoreCase) >= 0
             || t.IndexOf("unauthorized", StringComparison.OrdinalIgnoreCase) >= 0
             || t.IndexOf("offline", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1087,6 +1598,21 @@ public class MainForm : Form
                 await TryRestorePending();
                 return new Dictionary<string, object> { { "ok", true }, { "text", r.text.Trim() }, { "addr", addr } };
             }
+        }
+        // 常用地址全连不上：多半是机器还在线、只是无线调试端口换了。
+        // 挑一台 ping 得通的，后台扫端口段自动找回新端口，不占用本次返回时间。
+        foreach (var addr in cand.Take(3))
+        {
+            string ip = addr.Split(':')[0];
+            var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
+            if (pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) < 0) continue;
+            var st = new RelocateState { ip = ip, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在自动找回新端口…" };
+            reloc = st;
+            var _ = RelocateLoop(st);
+            Log("reconnect 失败，自动定位 " + ip + " 的新端口");
+            return new Dictionary<string, object> {
+                { "ok", false }, { "addr", addr }, { "relocating", true },
+                { "text", "端口可能变了，正在局域网里自动找回新端口…" } };
         }
         return new Dictionary<string, object> { { "ok", false }, { "text", "常用地址都连不上，重新扫描或手动填一次" }, { "addr", cand[0] } };
     }
@@ -1142,6 +1668,306 @@ public class MainForm : Form
         list.RemoveAll(a => a.Split(':')[0] == ip);   // 同 IP 的旧端口直接顶掉
         list.Insert(0, addr);
         WriteJson(WifiBookFile, list.Take(8).Select(a => new Dictionary<string, object> { { "addr", a } }).ToList());
+    }
+
+    // ── 连接诊断 ──
+
+    static string ProcName(int pid)
+    {
+        if (pid <= 0) return "";
+        try { return Process.GetProcessById(pid).ProcessName; } catch { return "pid " + pid; }
+    }
+
+    // 谁占着 mDNS 端口：adb 收不到设备广播最常见的原因，而且它自己不说
+    static async Task<List<object>> MdnsOwners()
+    {
+        var owners = new List<object>();
+        var ns = await Run("netstat", new[] { "-ano", "-p", "udp" }, 9000);
+        foreach (var line in (ns.text ?? "").Split('\n'))
+        {
+            var tk = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tk.Length < 3 || tk[0].ToUpperInvariant() != "UDP") continue;
+            if (!tk[1].EndsWith(":5353")) continue;
+            int pid;
+            int.TryParse(tk[tk.Length - 1], out pid);
+            string nm = ProcName(pid);
+            if (nm.Length == 0) continue;
+            owners.Add(new Dictionary<string, object> { { "addr", tk[1] }, { "name", nm }, { "pid", pid } });
+        }
+        return owners;
+    }
+
+    async Task<object> ConnectionDiag(Dictionary<string, object> p)
+    {
+        var ips = new List<object>();
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+            foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+            {
+                if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                string a = ua.Address.ToString();
+                if (a.StartsWith("169.254.")) continue;     // 没拿到 DHCP 地址，不参与局域网发现
+                ips.Add(new Dictionary<string, object> { { "ip", a }, { "nic", ni.Name } });
+            }
+        }
+
+        var owners = await MdnsOwners();
+        bool adbHolds = owners.Any(o => ((Dictionary<string, object>)o)["name"].ToString().IndexOf("adb", StringComparison.OrdinalIgnoreCase) >= 0);
+        string mdnsVerdict = owners.Count == 0 ? "free" : (adbHolds ? "ok" : "occupied");
+
+        string mdnsRaw = "";
+        int mdnsCount = 0;
+        if (adbExe != null)
+        {
+            var md = await Run(adbExe, new[] { "mdns", "services" }, 7000);
+            foreach (var line in (md.text ?? "").Split('\n'))
+            {
+                var l = line.Trim();
+                if (l.Length == 0 || l.StartsWith("List of")) continue;
+                mdnsCount++;
+                mdnsRaw += l + "\n";
+            }
+        }
+        // adb 占着 5353 却一条广播都收不到：多半是这个网络（公司/访客 WiFi）不转发 mDNS 组播，
+        // 光报 "ok" 会把人误导成"广播正常、是手机的问题"。这里单独给一个 silent 结论。
+        if (mdnsVerdict == "ok" && mdnsCount == 0) mdnsVerdict = "silent";
+
+        var devs = new List<object>();
+        if (adbExe != null)
+        {
+            var dv = await Run(adbExe, new[] { "devices" }, 8000);
+            foreach (var line in (dv.text ?? "").Split('\n'))
+            {
+                var tk = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tk.Length < 2 || tk[0] == "List" || tk[0].Contains("of")) continue;
+                if (tk[1] != "device" && tk[1] != "offline" && tk[1] != "unauthorized") continue;
+                devs.Add(new Dictionary<string, object> { { "id", tk[0] }, { "via", tk[0].Contains(":") ? "wireless" : "usb" }, { "state", tk[1] } });
+            }
+        }
+
+        Log("诊断 5353=" + mdnsVerdict + " 占用=" + string.Join(",", owners.Select(o => ((Dictionary<string, object>)o)["name"].ToString())) +
+            " mdns条目=" + mdnsCount + " 本机IP=" + ips.Count);
+
+        return new Dictionary<string, object> {
+            { "ok", true },
+            { "localIps", ips },
+            { "mdnsOwners", owners },
+            { "mdnsVerdict", mdnsVerdict },
+            { "mdnsCount", mdnsCount },
+            { "mdnsSample", mdnsRaw.Trim() },
+            { "devices", devs },
+            { "book", WifiBook() },
+            { "hasAdb", adbExe != null }
+        };
+    }
+
+    // 插线一次转无线：USB 还连着的时候，用 USB 读出手机的局域网 IP 和监听端口，
+    // 逐个试 adb connect，命中就记进常用地址簿。完全不依赖 mDNS。
+    async Task<object> UsbToWireless(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id");
+        if (id.Length == 0) return Err("先在「投屏」页选一台设备");
+        if (id.Contains(":")) return Err("这台已经是无线连接了，换一台用数据线连着的");
+        if (adbExe == null) return Err("没找到 adb");
+
+        string ip = "";
+        var w = await Adb(id, "shell", "ip", "-4", "addr", "show", "wlan0");
+        var m = System.Text.RegularExpressions.Regex.Match(w.text ?? "", @"inet ([0-9.]+)/");
+        if (m.Success) ip = m.Groups[1].Value;
+        if (ip.Length == 0)
+        {
+            var all = await Adb(id, "shell", "ip", "-4", "addr");
+            foreach (System.Text.RegularExpressions.Match mm in System.Text.RegularExpressions.Regex.Matches(all.text ?? "", @"inet ([0-9.]+)/"))
+            {
+                string c = mm.Groups[1].Value;
+                if (!c.StartsWith("127.") && !c.StartsWith("169.254.")) { ip = c; break; }
+            }
+        }
+        if (ip.Length == 0) return Err("没读到手机的局域网 IP：先确认手机连着 WiFi，且和电脑在同一个网络");
+
+        var ss = await Adb(id, "shell", "ss", "-ltn");
+        if (ss.text.IndexOf("LISTEN", StringComparison.OrdinalIgnoreCase) < 0) ss = await Adb(id, "shell", "netstat", "-ltn");
+        var ports = new List<int>();
+        foreach (System.Text.RegularExpressions.Match mm in System.Text.RegularExpressions.Regex.Matches(ss.text ?? @"", @"LISTEN\S*\s+\d+\s+\d+\s+(?:\*|\[::\]|0\.0\.0\.0):(\d+)"))
+        {
+            int v;
+            if (int.TryParse(mm.Groups[1].Value, out v) && v >= 1024 && v != 5353 && !ports.Contains(v)) ports.Add(v);
+        }
+        // adbd 的无线端口是系统随机分配的高位端口，从大到小试命中最快
+        ports = ports.OrderByDescending(x => x).Take(12).ToList();
+        if (ports.Count == 0) return Err("手机上没找到可试的监听端口：开发者选项里的「无线调试」可能没开");
+
+        var tried = new List<string>();
+        foreach (int port in ports)
+        {
+            string addr = ip + ":" + port;
+            tried.Add(addr);
+            var c = await Run(adbExe, new[] { "connect", addr }, 5000);
+            string t = (c.text ?? "").Trim();
+            if (t.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
+                || t.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                RememberWifi(addr);
+                SaveLastDevice(addr);
+                Log("转无线成功 " + id + " → " + addr + "（试了 " + tried.Count + " 个端口）");
+                return new Dictionary<string, object> {
+                    { "ok", true }, { "addr", addr }, { "tried", tried.Count }, { "ports", tried } };
+            }
+        }
+        Log("转无线失败 " + id + " " + ip + " 试了 " + tried.Count + " 个端口");
+        return new Dictionary<string, object> {
+            { "ok", false },
+            { "error", "手机 " + ip + " 上试了 " + tried.Count + " 个端口都没连上。最常见的原因是「无线调试」没开：开发者选项 → 无线调试 → 打开。" },
+            { "tried", tried.Count }, { "ports", tried } };
+    }
+
+    // ── 端口重新定位：mDNS 不可用（公司/访客 WiFi 常拦组播）时，靠 TCP 扫端口找回 adbd ──
+    // Android「无线调试」的连接端口每次开关都换一个随机高位端口（落在 Linux 临时端口段 32768-60999）。
+    // 广播收不到时，直接对这个段并行试连就能把新端口找出来；整个过程后台跑，前端轮询进度，避免卡住 40s 调用超时。
+    const int RelocBandStart = 32768;
+    const int RelocBandEnd = 60999;
+    const int RelocConcurrency = 1200;
+    const int RelocProbeTimeoutMs = 1500;
+
+    class RelocateState
+    {
+        public string ip = "";
+        public bool running;
+        public int scanned;
+        public int total;
+        public string result = "";   // "" | found | none
+        public string addr = "";
+        public string note = "";
+    }
+    RelocateState reloc;
+
+    // 单次非阻塞试连：BeginConnect + 超时定时器，不占用线程池线程，便于上千并发
+    static Task<bool> ConnectProbe(IPAddress ip, int port, int timeoutMs)
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        Socket sock = null;
+        System.Threading.Timer timer = null;
+        try
+        {
+            sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            timer = new System.Threading.Timer(_ => tcs.TrySetResult(false), null, timeoutMs, Timeout.Infinite);
+            sock.BeginConnect(new IPEndPoint(ip, port), ar =>
+            {
+                bool ok = false;
+                try { sock.EndConnect(ar); ok = sock.Connected; } catch { ok = false; }
+                tcs.TrySetResult(ok);
+            }, null);
+        }
+        catch { tcs.TrySetResult(false); }
+        var s = sock; var tm = timer;
+        return tcs.Task.ContinueWith(t =>
+        {
+            if (tm != null) tm.Dispose();
+            if (s != null) { try { s.Close(); } catch { } }
+            bool r = false;
+            try { r = t.Result; } catch { r = false; }
+            return r;
+        });
+    }
+
+    static async Task<List<int>> SweepBand(string ip, int start, int end, int concurrency, int timeoutMs, RelocateState st)
+    {
+        var open = new List<int>();
+        var sync = new object();
+        var sem = new SemaphoreSlim(concurrency);
+        var pending = new List<Task>();
+        IPAddress addr;
+        if (!IPAddress.TryParse(ip, out addr)) return open;
+        for (int port = start; port <= end; port++)
+        {
+            int p = port;
+            await sem.WaitAsync();
+            var t = ConnectProbe(addr, p, timeoutMs).ContinueWith(tk =>
+            {
+                bool ok = false;
+                try { ok = tk.Result; } catch { ok = false; }
+                if (ok) lock (sync) open.Add(p);
+                if (st != null) Interlocked.Increment(ref st.scanned);
+                sem.Release();
+            });
+            pending.Add(t);
+        }
+        await Task.WhenAll(pending);
+        return open;
+    }
+
+    async Task<object> RelocateStart(Dictionary<string, object> p)
+    {
+        if (adbExe == null) return Err("没找到 adb");
+        string ip = Ps(p, "ip").Trim();
+        if (ip.Length == 0) return Err("缺少要定位的手机 IP");
+        if (reloc != null && reloc.running && reloc.ip == ip)
+            return new Dictionary<string, object> { { "ok", true }, { "started", true }, { "text", "正在定位中" } };
+
+        var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
+        if (pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) < 0)
+            return Err("手机 " + ip + " 现在 ping 不通：确认它连着和电脑同一个 WiFi、且没锁屏，再试一次");
+
+        var st = new RelocateState { ip = ip, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在扫描端口…" };
+        reloc = st;
+        Log("relocate 开始扫描 " + ip + " 端口段 " + RelocBandStart + "-" + RelocBandEnd);
+        var _ = RelocateLoop(st);   // 后台跑，前端轮询 wifi-relocate-poll
+        return new Dictionary<string, object> { { "ok", true }, { "started", true } };
+    }
+
+    async Task RelocateLoop(RelocateState st)
+    {
+        try
+        {
+            var open = await SweepBand(st.ip, RelocBandStart, RelocBandEnd, RelocConcurrency, RelocProbeTimeoutMs, st);
+            if (open.Count == 0)
+            {
+                st.result = "none";
+                st.note = "扫遍端口段没找到任何开放端口：手机上的「无线调试」多半已经关了。去开发者选项里重新打开它，再点一次定位。";
+                Log("relocate " + st.ip + " 无开放端口");
+                return;
+            }
+            foreach (int port in open.OrderByDescending(x => x))
+            {
+                string addr = st.ip + ":" + port;
+                st.note = "发现 " + open.Count + " 个开放端口，正在试连 " + addr + "…";
+                var c = await Run(adbExe, new[] { "connect", addr }, 6000);
+                string t = (c.text ?? "").Trim();
+                bool hit = t.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
+                           || t.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (hit)
+                {
+                    foreach (int o in open)
+                        if (o != port) { try { await Run(adbExe, new[] { "disconnect", st.ip + ":" + o }, 3000); } catch { } }
+                    RememberWifi(addr);
+                    SaveLastDevice(addr);
+                    st.addr = addr;
+                    st.result = "found";
+                    st.note = "已找回新端口并连上：" + addr;
+                    Log("relocate 命中 " + addr + "（开放端口 " + open.Count + " 个）");
+                    return;
+                }
+                try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+            }
+            st.result = "none";
+            st.note = "找到 " + open.Count + " 个开放端口，但都不是 adbd：可能这台 IP 不是手机，或无线调试没真正开启。";
+            Log("relocate " + st.ip + " 开放 " + open.Count + " 端口但无 adbd");
+        }
+        catch (Exception e) { st.result = "none"; st.note = "定位出错：" + e.Message; }
+        finally { st.running = false; }
+    }
+
+    object RelocatePoll(Dictionary<string, object> p)
+    {
+        var st = reloc;
+        if (st == null) return new Dictionary<string, object> { { "ok", false }, { "phase", "idle" } };
+        string phase = st.running ? "running" : (st.result.Length > 0 ? st.result : "idle");
+        return new Dictionary<string, object> {
+            { "ok", true }, { "phase", phase }, { "ip", st.ip },
+            { "scanned", st.scanned }, { "total", st.total },
+            { "result", st.result }, { "addr", st.addr }, { "note", st.note } };
     }
 
     object WifiForget(Dictionary<string, object> p)
@@ -1280,6 +2106,29 @@ public class MainForm : Form
         WriteJson(RecentFile, seen.Take(8).ToList());
     }
 
+    Dictionary<string, int> LoadUsage()
+    {
+        var d = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var raw = ReadJson(UsageFile) as Dictionary<string, object>;
+        if (raw != null)
+            foreach (var kv in raw)
+            {
+                int n;
+                if (int.TryParse(Convert.ToString(kv.Value), out n) && n > 0) d[kv.Key] = n;
+            }
+        return d;
+    }
+
+    void CountLaunch(string pkg)
+    {
+        if (pkg.Length == 0) return;
+        var d = LoadUsage();
+        int n;
+        d.TryGetValue(pkg, out n);
+        d[pkg] = n + 1;
+        WriteJson(UsageFile, d);
+    }
+
     void WriteJson(string file, object obj)
     {
         try { Directory.CreateDirectory(DataDir); File.WriteAllText(file, Json.Serialize(obj), Encoding.UTF8); } catch { }
@@ -1405,9 +2254,21 @@ public class MainForm : Form
             SaveAppsCache(cache);
         }
 
-        var apps = pkgs.Select(pkg => (object)new Dictionary<string, object>
+        // 常用的排前面：打开过一次就往上走，同次数按包名字典序（pkgs 已是字典序，OrderBy 稳定）
+        var usage = LoadUsage();
+        pkgs = pkgs.OrderByDescending(x => { int n; return usage.TryGetValue(x, out n) ? n : 0; }).ToList();
+
+        var apps = pkgs.Select(pkg =>
         {
-            { "pkg", pkg }, { "activity", cache.ContainsKey(pkg) ? cache[pkg] : "" }, { "sys", sysPkgs.Contains(pkg) }
+            int n; usage.TryGetValue(pkg, out n);
+            return (object)new Dictionary<string, object>
+            {
+                { "pkg", pkg },
+                { "activity", cache.ContainsKey(pkg) ? cache[pkg] : "" },
+                { "sys", sysPkgs.Contains(pkg) },
+                { "used", n },
+                { "name", AppNote(pkg) }
+            };
         }).ToList();
         return new Dictionary<string, object> { { "ok", true }, { "apps", apps }, { "total", pkgs.Count }, { "fresh", need.Count } };
     }
@@ -1449,16 +2310,22 @@ public class MainForm : Form
         if (pkg.Length == 0) return Err("缺包名");
         int disp = await CurrentVirtualDisplay(id);
 
-        // 已有虚拟屏：先试原地追加启动；很多系统的 am 不支持 --display-id，失败就退回新开窗口
+        // 已有虚拟屏：先试原地追加启动；am 的写法各家系统不一致，StartOnDisplay 里两种都试
         if (disp != 0)
         {
-            string comp = pkg + activity;
+            string act = activity;
+            if (act.Length == 0)
+            {
+                var cache = LoadAppsCache();
+                if (!cache.TryGetValue(pkg, out act) || act.Length == 0) act = await ResolveActivity(id, pkg);
+            }
+            string comp = pkg + act;
             if (comp != pkg && comp.Length > 0)
             {
-                var r = await Adb(id, "shell", "am", "start", "--display-id=" + disp, "-n", comp);
+                var r = await StartOnDisplay(id, disp, comp);
                 bool ok = r.ok && r.text.IndexOf("Unknown option", StringComparison.OrdinalIgnoreCase) < 0
                               && r.text.IndexOf("Error", StringComparison.OrdinalIgnoreCase) < 0;
-                if (ok) return new Dictionary<string, object> { { "ok", true }, { "displayId", disp }, { "created", false } };
+                if (ok) { CountLaunch(pkg); return new Dictionary<string, object> { { "ok", true }, { "displayId", disp }, { "created", false } }; }
             }
         }
 
@@ -1466,7 +2333,11 @@ public class MainForm : Form
         var lw = await LaunchWindow(new Dictionary<string, object> {
             { "id", id }, { "size", size }, { "app", pkg },
             { "bitrate", Ps(p, "bitrate", "12M") },
-            { "windowWidth", Ps(p, "windowWidth", "0") } });
+            { "windowWidth", Ps(p, "windowWidth", "0") },
+            // 投屏目标要跟着透传，否则从应用列表开的窗口会掉回默认屏
+            { "monIndex", Ps(p, "monIndex", "-1") },
+            { "alwaysOnTop", Ps(p, "alwaysOnTop", "0") },
+            { "borderless", Ps(p, "borderless", "0") } });
         var dict = lw as Dictionary<string, object>;
         object dv;
         if (dict == null || !dict.TryGetValue("displayId", out dv))
@@ -1483,11 +2354,57 @@ public class MainForm : Form
         return ids.Count > 0 ? ids.Max() : 0;
     }
 
-    // ── 应用图标：从设备 APK 提取（toybox unzip），本地缓存 ──
+    // ── 应用图标：优先程序自带的兜底图标，其次从设备 APK 提取（toybox unzip）──
+
+    // 微信这类 APK 把资源改名成 r/xx/yy 且图标是 webp/自适应图标，按名字在包里挑不到，
+    // 所以这类应用改用内嵌进 exe 的图标：往 assets\icons\ 放一个 <包名>.png 就生效。
+    static readonly Dictionary<string, string> AppNotes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        { "com.tencent.mm", "微信" },
+    };
+    static Dictionary<string, string> builtinIcons;
+
+    static Dictionary<string, string> BuiltinIcons()
+    {
+        if (builtinIcons != null) return builtinIcons;
+        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            foreach (var nm in asm.GetManifestResourceNames())
+            {
+                int at = nm.IndexOf("icon.", StringComparison.OrdinalIgnoreCase);
+                if (at < 0 || !nm.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) continue;
+                string pkg = nm.Substring(at + 5, nm.Length - at - 5 - 4);
+                if (pkg.Length == 0) continue;
+                using (var st = asm.GetManifestResourceStream(nm))
+                {
+                    if (st == null) continue;
+                    var ms = new MemoryStream();
+                    st.CopyTo(ms);
+                    d[pkg] = "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                }
+            }
+        }
+        catch { }
+        builtinIcons = d;
+        return d;
+    }
+
+    static string AppNote(string pkg)
+    {
+        string n;
+        return AppNotes.TryGetValue(pkg, out n) ? n : "";
+    }
+
     async Task<object> AppIcon(Dictionary<string, object> p)
     {
         string id = Ps(p, "id"), pkg = Ps(p, "pkg");
-        if (id.Length == 0 || pkg.Length == 0) return Err("缺参数");
+        if (pkg.Length == 0) return Err("缺参数");
+        string builtin;
+        if (BuiltinIcons().TryGetValue(pkg, out builtin))
+            return new Dictionary<string, object> { { "ok", true }, { "png", builtin } };
+        if (id.Length == 0) return Err("缺参数");
         string dir = Path.Combine(DataDir, "app-icons");
         try { Directory.CreateDirectory(dir); } catch { }
         string cachePath = Path.Combine(dir, San(pkg) + ".png");

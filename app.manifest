@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="Shuiyue.ScreenZoom" type="Win32" processorArchitecture="amd64"/>
+
+  <!-- 以 Windows 10/11 身份运行：不声明也能用，但部分系统调用要靠 supportedOS 才走新路径 -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+      <!-- Windows 8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a1-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <!-- 显式声明「不需要管理员」：指定 /win32manifest 后编译器不再嵌入默认清单，
+       这段得自己带上，否则某些组策略下会被当成需要提权。 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- dpiAware 是 Win8.1 及更早的写法，dpiAwareness 是 Win10 的写法；
+           两个都写，新系统读 dpiAwareness 拿 PerMonitorV2，老系统退回 dpiAware。
+           没有这段声明时 Windows 会按 96dpi 画好窗口再整窗位图拉伸，字就是糊的。 -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, system</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>
