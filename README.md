@@ -44,14 +44,14 @@
 
 ### 自己构建
 
-需要 .NET Framework 4.0+ 的 `csc.exe`（Windows 自带）与 WebView2 引用 DLL（`Microsoft.Web.WebView2.Core.dll`、`Microsoft.Web.WebView2.WinForms.dll`，可从 NuGet 获取）。
+仓库已自带编译所需的 WebView2 SDK DLL 和投屏引擎（`engine/`），只需要 .NET Framework 4.x 的 `csc.exe`（Windows 自带，不用装 SDK）。
 
 ```powershell
 # 在项目根目录执行
 .\build.ps1
 ```
 
-编译产物为 `水月清影.exe`，前端为纯 HTML（`index.html`），无需打包资源。
+编译产物为 `水月清影.exe`。运行时引擎只认 exe 同目录的 `engine/`（里面需有 `scrcpy.exe`、`adb.exe`），所以整个目录一起搬走即可；升级 scrcpy 时只替换 `engine/`。
 
 ## 工作原理
 
@@ -84,4 +84,11 @@
 | 组件 | 协议 |
 |---|---|
 | [scrcpy](https://github.com/Genymobile/scrcpy) | Apache-2.0 |
-| [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) | 微软专有，仅供运行期使用 |
+| [Android Platform Tools / adb](https://developer.android.com/tools/releases/platform-tools) | Apache-2.0 |
+| [FFmpeg](https://ffmpeg.org/)（LGPL 构建，动态链接） | LGPL-2.1+ |
+| [SDL3](https://github.com/libsdl-org/SDL) | Zlib |
+| [libusb](https://github.com/libusb/libusb) | LGPL-2.1 |
+| [WebView2 SDK](https://developer.microsoft.com/microsoft-edge/webview2/) | BSD 风格（微软） |
+| WebView2 运行时 | 微软专有，由系统提供，不随包分发 |
+
+第三方许可证原文与再分发说明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
