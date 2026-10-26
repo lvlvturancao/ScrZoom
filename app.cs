@@ -551,6 +551,15 @@ public class MainForm : Form
         });
     }
 
+    // 置顶 / 无边框 / 指定窗口宽度，都是 scrcpy 原生参数；视频流尺寸不受影响
+    static void AddWindowOpts(List<string> a, Dictionary<string, object> p)
+    {
+        if (Ps(p, "alwaysOnTop") == "1") a.Add("--always-on-top");
+        if (Ps(p, "borderless") == "1") a.Add("--window-borderless");
+        int ww;
+        if (int.TryParse(Ps(p, "windowWidth"), out ww) && ww > 0) a.Add("--window-width=" + ww);
+    }
+
     static string EscapeArg(string s)
     {
         // 参数里带引号时必须转义，否则整条命令被外壳拆开，报错文本会被当成结果解析
@@ -649,6 +658,7 @@ public class MainForm : Form
         var a = new List<string> { "-s", Ps(p, "id"), "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid" };
         if (Ps(p, "fullscreen") == "1") a.Add("--fullscreen");
+        else AddWindowOpts(a, p);
         return Spawn(a, Ps(p, "id"),
             Ps(p, "fullscreen") == "1" ? "镜像 · 全屏" : "镜像",
             Ps(p, "size"), false);
@@ -661,6 +671,8 @@ public class MainForm : Form
         var before = await ListDisplayIds(id);
         var a = new List<string> { "-s", id, "--new-display=" + Ps(p, "size", "1280x720/240"),
             "--video-bit-rate=" + Ps(p, "bitrate", "12M"), "--keyboard=uhid" };
+        // 视频流保持虚拟屏原分辨率，电脑放不下时只缩窗口，不降清晰度
+        AddWindowOpts(a, p);
         string app = Ps(p, "app");
         if (app.Length > 0)
         {
@@ -1336,7 +1348,8 @@ public class MainForm : Form
             new Dictionary<string, object>{ { "name", "1080P 办公" }, { "size", "1920x1080/320" } },
             new Dictionary<string, object>{ { "name", "2K 高清" }, { "size", "2560x1440/480" } },
             new Dictionary<string, object>{ { "name", "720P 竖屏" }, { "size", "720x1280/240" } },
-            new Dictionary<string, object>{ { "name", "1080P 竖屏" }, { "size", "1080x1920/320" } }
+            new Dictionary<string, object>{ { "name", "1080P 竖屏" }, { "size", "1080x1920/320" } },
+            new Dictionary<string, object>{ { "name", "2K 竖屏" }, { "size", "1440x2560/480" } }
         };
         var custom = ReadJson(TemplatesFile) as System.Collections.IEnumerable;
         var cl = new List<object>();
@@ -1470,7 +1483,9 @@ public class MainForm : Form
 
         // 新开虚拟屏窗口 + scrcpy 原生 --start-app（把应用启动到该虚拟屏，兼容性最好）
         var lw = await LaunchWindow(new Dictionary<string, object> {
-            { "id", id }, { "size", size }, { "app", pkg }, { "bitrate", "12M" } });
+            { "id", id }, { "size", size }, { "app", pkg },
+            { "bitrate", Ps(p, "bitrate", "12M") },
+            { "windowWidth", Ps(p, "windowWidth", "0") } });
         var dict = lw as Dictionary<string, object>;
         object dv;
         if (dict == null || !dict.TryGetValue("displayId", out dv))

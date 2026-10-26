@@ -23,7 +23,7 @@ if (-not (Test-Path "水月清影.exe")) { throw "找不到 水月清影.exe" }
 
 $pub = "cloudflare-pages\public"
 New-Item -ItemType Directory -Force -Path (Join-Path $pub "shots") | Out-Null
-$zipName = "shuiyue-$ver.zip"
+$zipName = "shuiyue-$ver-win-x64.zip"
 $zipPath = Join-Path $pub $zipName
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 

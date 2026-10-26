@@ -103,6 +103,8 @@ button,select,input{font:inherit;color:inherit}
 .field label{display:block;font-size:11.5px;color:var(--text-3);margin-bottom:5px}
 .field select{background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r-el);padding:7px 10px;font-size:12.5px;min-width:136px;transition:.16s}
 .field select:focus{outline:none;border-color:var(--accent-2);box-shadow:var(--ring)}
+.field input{background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r-el);padding:7px 10px;font-size:12.5px}
+.field input:focus{outline:none;border-color:var(--accent-2);box-shadow:var(--ring)}
 
 .out{width:318px;border-left:1px solid var(--line);background:var(--surface);padding:20px;flex-shrink:0;overflow:auto}
 .out .h2{font-size:11.5px;color:var(--text-3);margin-bottom:14px;letter-spacing:1px}
@@ -185,7 +187,7 @@ button,select,input{font:inherit;color:inherit}
 .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center}
 .modal[hidden]{display:none}
 .mask{position:absolute;inset:0;background:rgba(9,25,40,.42);backdrop-filter:blur(2px)}
-.box{position:relative;background:var(--surface);border:0;border-radius:24px;padding:26px 28px;width:352px;box-shadow:0 40px 80px -24px rgba(9,28,46,.5);text-align:center}
+.box{position:relative;background:var(--surface);border:0;border-radius:24px;padding:26px 28px;width:352px;max-height:calc(100vh - 40px);overflow:auto;box-shadow:0 40px 80px -24px rgba(9,28,46,.5);text-align:center}
 .ab-title{font-size:16px;font-weight:700;letter-spacing:.4px}
 .ab-meta{font-size:11.5px;color:var(--text-3);margin-top:6px;line-height:1.75;word-break:break-all}
 .ab-up{margin-top:16px;padding:13px 15px;border:0;border-radius:var(--r-box);background:var(--sunken);text-align:left}
@@ -202,6 +204,10 @@ button,select,input{font:inherit;color:inherit}
 .ab-don b{font-size:13.5px}
 .ab-don p{font-size:12px;color:var(--text-2);margin:8px 0;line-height:1.75}
 .ab-don img{width:200px;height:200px;border:1px solid var(--line);border-radius:16px;padding:9px;background:#fff;object-fit:contain}
+.ab-keys h4{font-size:11.5px;color:var(--text-3);letter-spacing:1px;margin-bottom:9px;font-weight:600}
+.ab-keys .kg{display:grid;grid-template-columns:1fr auto 1fr auto;gap:7px 10px;align-items:center;font-size:12px;color:var(--text-2)}
+.ab-keys kbd{font-family:var(--mono);font-size:10.5px;background:var(--sunken);border:1px solid var(--line);border-radius:5px;padding:2px 6px;color:var(--text);white-space:nowrap}
+.ab-keys .kt{margin-top:10px;font-size:11px;color:var(--text-3);line-height:1.6}
 .ab-lic{font-size:11px;color:var(--text-3);margin:14px 0}
 .ab-lic a{color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent-line)}
 </style>
@@ -271,6 +277,11 @@ button,select,input{font:inherit;color:inherit}
           <div class="fields">
             <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
             <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
+            <div class="field"><label>窗口宽度（留空自动）</label><input id="fWinW" placeholder="如 720" maxlength="5" style="width:104px"></div>
+          </div>
+          <div class="wr" style="margin-top:12px;gap:18px">
+            <label class="chk"><input type="checkbox" id="chkTop"> 窗口置顶</label>
+            <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（用 Alt+Q 关闭）</label>
           </div>
         </details>
       </div>
@@ -370,6 +381,21 @@ button,select,input{font:inherit;color:inherit}
       <div class="ab-up-msg" id="upMsg"></div>
     </div>
     <div class="ab-sep"></div>
+    <div class="ab-keys">
+      <h4>投屏快捷键</h4>
+      <div class="kg">
+        <span>返回</span><kbd>Alt+B</kbd>
+        <span>主页</span><kbd>Alt+H</kbd>
+        <span>最近任务</span><kbd>Alt+S</kbd>
+        <span>全屏切换</span><kbd>Alt+F</kbd>
+        <span>旋转画面</span><kbd>Alt+← / →</kbd>
+        <span>音量</span><kbd>Alt+↑ / ↓</kbd>
+        <span>电源键</span><kbd>Alt+P</kbd>
+        <span>退出投屏</span><kbd>Alt+Q</kbd>
+      </div>
+      <p class="kt">鼠标右键是返回，中键是主页，第四键是最近任务。这些键在投屏窗口上按才生效。</p>
+    </div>
+    <div class="ab-sep"></div>
     <div class="ab-don">
       <b>支持作者</b>
       <p>开发不易，如果这个软件对你有帮助，可以随手支持一下，codex的额度真的不够用啦，哭哭~</p>
@@ -400,13 +426,22 @@ function call(action, payload) {
   });
 }
 window.__cb = (id, result) => { const f = __pend[id]; if (f) { delete __pend[id]; f(result); } };
+// 投屏窗口的显示选项，跟着每次启动传下去；放大档固定全屏，不参与
+function winOpts() {
+  const o = {};
+  if ($('chkTop') && $('chkTop').checked) o.alwaysOnTop = '1';
+  if ($('chkBorderless') && $('chkBorderless').checked) o.borderless = '1';
+  const w = (($('fWinW') && $('fWinW').value) || '').trim();
+  if (/^\d{2,5}$/.test(w)) o.windowWidth = w;
+  return o;
+}
 const api = {
   scan: () => call('scan'),
   monitor: () => call('monitor'),
   state: () => call('state'),
-  launchMirror: (o) => call('launch-mirror', { id: o.id, fullscreen: o.fullscreen ? '1' : '0', bitrate: o.bitrate, fps: o.fps }),
+  launchMirror: (o) => call('launch-mirror', Object.assign({ id: o.id, fullscreen: o.fullscreen ? '1' : '0', size: o.size || '', bitrate: o.bitrate, fps: o.fps }, o.fullscreen ? {} : winOpts())),
   launchScaled: (o) => call('launch-scaled', { id: o.id, kind: o.kind, factor: String(o.factor || ''), monW: String(o.monW), monH: String(o.monH), bitrate: o.bitrate, fps: o.fps }),
-  launchWindow: (o) => call('launch-window', { id: o.id, app: o.app || '', size: o.size, bitrate: o.bitrate }),
+  launchWindow: (o) => call('launch-window', Object.assign({ id: o.id, app: o.app || '', size: o.size, bitrate: o.bitrate, windowWidth: String(o.windowWidth || '0') }, winOpts())),
   windows: () => call('windows'),
   closeWindows: () => call('close-windows'),
   sessions: () => call('sessions'),
@@ -421,7 +456,7 @@ const api = {
   vdTemplateDelete: (name) => call('vd-template-delete', { name }),
   appsList: (id) => call('apps-list', { id }),
   appIcon: (id, pkg) => call('app-icon', { id, pkg }),
-  appsLaunch: (o) => call('apps-launch', o),
+  appsLaunch: (o) => call('apps-launch', Object.assign({}, o, winOpts())),
   restore: (id) => call('restore', { id }),
   toWireless: (id) => call('to-wireless', { id }),
   toWired: (id) => call('to-wired', { id }),
@@ -660,7 +695,7 @@ async function renderRecent() {
 async function openApp() {
   const d = cur(); if (!d) return toast('先选设备', true);
   const name = $('appName').value.trim();
-  const r = await api.launchWindow({ id: d.id, app: name, size: $('fVd').value, bitrate: $('fVdBitrate').value });
+  const r = await api.launchWindow({ id: d.id, app: name, size: $('fVd').value, bitrate: $('fVdBitrate').value, windowWidth: String(vdWindowWidth($('fVd').value)) });
   if (!r.ok) return toast('启动失败：' + (r.error || ''), true);
   toast(name ? '正在为「' + name + '」开窗口，手机上找应用要几秒' : '已开一块空白屏');
   $('appName').value = '';
@@ -668,20 +703,46 @@ async function openApp() {
 }
 
 /* ── P0：虚拟屏模板 + 残留清理 + 设备应用列表 ── */
+function vdSizeParts(size) {
+  const seg = String(size || '').split('/');
+  const p = seg[0].split('x').map(Number);
+  return { w: p[0] || 0, h: p[1] || 0, dpi: Number(seg[1]) || 0 };
+}
+// 电脑放不下时只缩窗口，视频流仍是虚拟屏原分辨率
+function vdWindowWidth(size) {
+  const s = vdSizeParts(size);
+  const maxH = Math.max(480, MON.h - 140);
+  if (!s.h || s.h <= maxH) return 0;
+  return Math.round(s.w * maxH / s.h);
+}
+function syncVdBitrate() {
+  const o = $('fVd').selectedOptions && $('fVd').selectedOptions[0];
+  const follow = !!(o && o.dataset && o.dataset.follow === '1');
+  const b = $('fVdBitrate');
+  if (follow && b && ['8M', '12M'].indexOf(b.value) >= 0) b.value = '16M';
+}
 async function renderVdTemplates() {
+  const d = cur();
   const r = await api.vdTemplates();
   const all = [].concat((r && r.presets) || [], (r && r.custom) || []);
-  if (!all.length) return;
   const grp = (items, label) => {
-    const opts = items.map(t => `<option value="${esc(t.size)}">${esc(t.name)} · ${esc(t.size)}</option>`).join('');
+    const opts = items.map(t => `<option value="${esc(t.size)}"${t.follow ? ' data-follow="1"' : ''}>${esc(t.name)} · ${esc(t.size)}</option>`).join('');
     return opts ? '<optgroup label="' + label + '">' + opts + '</optgroup>' : '';
   };
+  const rec = [];
+  // 与手机同分辨率同密度，界面布局才一致；电脑放不下交给窗口缩放
+  if (d && d.physicalSize && d.physicalDpi) rec.push({ name: '跟随设备', size: d.physicalSize + '/' + d.physicalDpi, follow: true });
   const land = [], port = [];
   all.forEach(t => {
     const p = String(t.size || '').split('/')[0].split('x').map(Number);
     (p.length === 2 && p[1] > p[0] ? port : land).push(t);
   });
-  $('fVd').innerHTML = grp(land, '横屏') + grp(port, '竖屏');
+  $('fVd').innerHTML = grp(rec, '推荐') + grp(land, '横屏') + grp(port, '竖屏');
+  const keep = localStorage.getItem('syrVdTemplate');
+  const vals = [].map.call($('fVd').options, o => o.value);
+  if (keep && vals.indexOf(keep) >= 0) $('fVd').value = keep;
+  else if (rec.length) $('fVd').value = rec[0].size;
+  syncVdBitrate();
 }
 async function renderVdInfo() {
   const d = cur();
@@ -760,7 +821,7 @@ function patchIcon(pkg, png) {
 }
 async function openInVd(pkg, act) {
   const d = cur(); if (!d) return toast('先选设备', true);
-  const r = await api.appsLaunch({ id: d.id, pkg, activity: act, size: $('fVd').value });
+  const r = await api.appsLaunch({ id: d.id, pkg, activity: act, size: $('fVd').value, bitrate: $('fVdBitrate').value, windowWidth: String(vdWindowWidth($('fVd').value)) });
   if (!r.ok) return toast('启动失败：' + (r.error || '未知'), true);
   toast((r.created ? '已创建虚拟屏 #' + r.displayId + ' 并启动 ' : '已在虚拟屏 #' + r.displayId + ' 启动 ') + pkg);
   renderVdInfo(); setTimeout(renderWins, 3000);
@@ -971,6 +1032,21 @@ $('btnTmplDel').onclick = tmplDelete;
 $('btnAppsRefresh').onclick = renderApps;
 $('appFilter').addEventListener('input', paintApps);
 $('chkShowSys').onchange = () => { appsShowSys = $('chkShowSys').checked; paintApps(); };
+$('fVd').onchange = () => {
+  localStorage.setItem('syrVdTemplate', $('fVd').value);
+  syncVdBitrate();
+  renderAll();
+};
+(function () {
+  const top = $('chkTop'), bd = $('chkBorderless'), w = $('fWinW');
+  if (!top) return;
+  top.checked = localStorage.getItem('syrTop') === '1';
+  bd.checked = localStorage.getItem('syrBorderless') === '1';
+  w.value = localStorage.getItem('syrWinW') || '';
+  top.onchange = () => localStorage.setItem('syrTop', top.checked ? '1' : '0');
+  bd.onchange = () => localStorage.setItem('syrBorderless', bd.checked ? '1' : '0');
+  w.onchange = () => localStorage.setItem('syrWinW', w.value.trim());
+})();
 $('chkAutoRe').checked = localStorage.getItem('syrAutoRe') !== '0';
 $('chkAutoRe').onchange = () => localStorage.setItem('syrAutoRe', $('chkAutoRe').checked ? '1' : '0');
 $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
