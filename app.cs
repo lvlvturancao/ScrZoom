@@ -375,30 +375,11 @@ public class MainForm : Form
         catch { }
     }
 
+    // 引擎只认 exe 同目录的 engine 文件夹，整个目录搬到哪都能用
     static string FindEngine()
     {
         var local = Path.Combine(AppDir(), "engine");
-        if (File.Exists(Path.Combine(local, "scrcpy.exe"))) return local;
-
-        // 先看程序自己的上一级目录：程序和引擎放在一起、整体搬到哪都能用，升级只换旁边那个 scrcpy 文件夹
-        var beside = NewestEngine(new[] { Path.GetDirectoryName(AppDir()) });
-        if (beside != null) return beside;
-
-        // 兜底：下载目录
-        var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-        return NewestEngine(new[] { downloads });
-    }
-
-    static string NewestEngine(string[] roots)
-    {
-        var candidates = new List<string>();
-        foreach (var root in roots)
-        {
-            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
-            foreach (var d in Directory.GetDirectories(root).Where(d => Path.GetFileName(d).IndexOf("scrcpy", StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(d => d))
-                if (File.Exists(Path.Combine(d, "scrcpy.exe"))) candidates.Add(d);
-        }
-        return candidates.Count > 0 ? candidates[candidates.Count - 1] : null;
+        return File.Exists(Path.Combine(local, "scrcpy.exe")) ? local : null;
     }
 
     async void OnMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
