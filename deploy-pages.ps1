@@ -3,10 +3,14 @@ param(
 )
 # 把 cloudflare-pages/public 部署到 Cloudflare Pages。产物由 publish.ps1 生成。
 $ErrorActionPreference = "Stop"
-Set-Location "D:\code\scrcpy-win64"
+Set-Location $PSScriptRoot
 
 # 这台机器调 Cloudflare API 需要走本机代理，端口漂移时调用前自己设 HTTPS_PROXY 覆盖
-if (-not $env:HTTPS_PROXY) { $env:HTTPS_PROXY = "http://127.0.0.1:7897" }
+if (-not $env:HTTPS_PROXY) {
+  # 本机代理只在真开着时启用；别人机器没有这个端口就直连
+  $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port 7897 -InformationLevel Quiet -WarningAction SilentlyContinue
+  if ($probe) { $env:HTTPS_PROXY = "http://127.0.0.1:7897" }
+}
 
 $pub = "cloudflare-pages\public"
 foreach ($f in @("index.html", "update.json")) {

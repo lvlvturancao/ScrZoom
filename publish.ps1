@@ -6,7 +6,7 @@ param(
 )
 # 发布一条链：编译 → 打 zip → 算校验和 → 写 update.json。版本号只认 app.cs 里那一个来源。
 $ErrorActionPreference = "Stop"
-Set-Location "D:\code\scrcpy-win64"
+Set-Location $PSScriptRoot
 
 $src = Get-Content "app.cs" -Raw -Encoding UTF8
 $ver = [regex]::Match($src, 'AppVersion\s*=\s*"([^"]+)"').Groups[1].Value
