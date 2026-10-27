@@ -1,11 +1,11 @@
 {
-  "versionName": "0.2.0",
-  "versionCode": 5,
-  "title": "水月清影 0.2.0",
-  "notes": "0.2.0：修复软件本体在高分屏下 UI 发虚（PerMonitorV2 逐显示器感知，跨屏拖动实时跟随缩放）；无线连接发现重写，同局域网可直接搜到设备；设备断连后状态实时更新并自动重连；投屏目标可选副屏；DPI 还原改为恢复用户原始设置而非厂商默认值。",
-  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.2.0-win-x64.zip",
-  "size": 12071443,
-  "sha256": "1c00cbda8925dbd58f7c2baed32f8ea75bfc85943453361682c1047479fe5f8f",
+  "versionName": "0.3.0",
+  "versionCode": 6,
+  "title": "水月清影 0.3.0",
+  "notes": "0.3.0：无线连接重做。扫描按设备身份（序列号/MAC）查找，手机换 IP 或端口后可找回；新增单台「找端口」和「深度查找局域网」，带进度、可停止；所有连接都验证设备状态，不再把 OPPO 等专有端口误判为无线调试；地址簿不再因 IP 复用串设备或误删记录。",
+  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.3.0-win-x64.zip",
+  "size": 12091622,
+  "sha256": "9655b83a094921aa517974fc95ed0a6d827f04cd1188f2e50c990017899d5571",
   "force": false,
-  "published": "2026-10-26"
+  "published": "2026-10-27"
 }

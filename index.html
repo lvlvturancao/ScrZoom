@@ -68,10 +68,18 @@ button,select,input{font:inherit;color:inherit}
 .row .mt{font-size:11.5px;color:var(--text-3);margin-top:2px;font-variant-numeric:tabular-nums}
 .row .addr{font-size:11px;color:var(--text-3);opacity:.8;margin-top:1px;font-variant-numeric:tabular-nums;letter-spacing:.3px}
 .row .sp{flex:1}
+/* 窗口变窄时按钮不许压成竖排：整行放不下就换到下一行 */
+.row button{flex-shrink:0;white-space:nowrap}
+.row.wrap{flex-wrap:wrap;row-gap:8px}
 .tag{font-size:11px;padding:3px 10px;border-radius:999px;background:var(--sunken);color:var(--text-2);border:1px solid var(--line)}
 .tag.ok{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
 .tag.no{color:var(--text-3)}
 .wnote{font-size:11.5px;color:var(--text-3);margin-top:3px;line-height:1.55}
+/* 无线待连接列表：文字让位、按钮不缩，窗口窄时整组动作换到第二行 */
+#wifiDevs .row{flex-wrap:wrap;row-gap:8px}
+#wifiDevs .row .wmain{flex:1 1 200px;min-width:0}
+#wifiDevs .row .acts{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto}
+#wifiDevs .row .tag,#wifiDevs .row .b2{flex-shrink:0;white-space:nowrap}
 .check{width:17px;height:17px;border-radius:50%;border:1.6px solid var(--line-strong);flex-shrink:0;position:relative;transition:.16s}
 .row.on .check{border-color:var(--accent);background:linear-gradient(140deg,var(--accent-2),var(--accent))}
 .row.on .check::after{content:'';position:absolute;left:5px;top:1.5px;width:4.5px;height:9px;border:solid #fff;border-width:0 1.8px 1.8px 0;transform:rotate(42deg)}
@@ -163,6 +171,8 @@ button,select,input{font:inherit;color:inherit}
 .foot .sp{flex:1}
 .b2{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-el);padding:8px 14px;font-size:12.5px;color:var(--text-2);cursor:pointer;transition:.16s;box-shadow:var(--sh-el)}
 .b2:hover{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+.b2.act{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft);white-space:nowrap}
+.b2.act:hover{background:#d5f0f6;border-color:var(--accent);color:#0a7d94}
 .go{background:linear-gradient(135deg,var(--accent-2),var(--accent) 65%,#0b7f97);color:#fff;border:0;border-radius:999px;padding:11px 28px;font-size:13.5px;font-weight:700;letter-spacing:.5px;cursor:pointer;box-shadow:0 14px 26px -14px rgba(14,147,174,.75)}
 .go:hover{filter:brightness(1.06)}
 .go:disabled{background:var(--line-strong);box-shadow:none;cursor:not-allowed;filter:none}
@@ -263,6 +273,7 @@ button,select,input{font:inherit;color:inherit}
           <div class="wifi" id="wifiPanel" hidden>
             <div class="wt">开启无线调试后点右上角「重新扫描」，自动发现局域网设备，首次连接填配对码。<span class="tip inline">?<span class="bub">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，本机自动扫描局域网设备，找到的直接点「连接」。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。手动输入仅为扫描不到时的兜底。</span></span></div>
             <div class="wm" id="wifiScanMsg" style="margin:0 0 9px"></div>
+            <button class="b2" id="btnFindStop" hidden style="margin:-3px 0 9px;padding:4px 10px">停止查找</button>
             <div class="rows" id="wifiDevs"></div>
             <div class="wt" style="margin-top:10px;margin-bottom:0">扫描不到？确认无线调试开着、屏幕没锁。或用手动输入：</div>
             <div class="wr">
@@ -503,7 +514,9 @@ const api = {
   discover: () => call('wifi-discover'),
   restartAdb: () => call('wifi-restart-adb'),
   reconnectLast: () => call('reconnect-last'),
-  relocate: (ip) => call('wifi-relocate', { ip }),
+  relocate: (addr, ip) => call('wifi-relocate', { addr: addr || '', ip: ip || '' }),
+  deepScan: () => call('wifi-deep-scan'),
+  cancelFind: () => call('wifi-find-cancel'),
   relocatePoll: () => call('wifi-relocate-poll'),
   disconnect: (addr) => call('wifi-disconnect', { addr: addr || '' }),
   wifiForget: (addr) => call('wifi-forget', { addr }),
@@ -758,10 +771,10 @@ async function renderWins() {
 async function renderConn() {
   const st = await api.state();
   $('restoreBox').innerHTML = st
-    ? `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '原样')} / ${esc(st.dpiOverride || '原样')}</div></div>
-       <span class="sp"></span><button class="b2" id="btnDoRestore">立即还原</button></div>`
-    : `<div class="row"><span class="ic">${IC.undo}</span><div><div class="nm">没有未还原的记录</div><div class="mt">如需把设备分辨率与显示大小强制写回它原本的值，点右侧按钮</div></div>
-       <span class="sp"></span><button class="b2" id="btnDoRestore">还原原本设置</button></div>`;
+    ? `<div class="row wrap"><span class="ic">${IC.undo}</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '原样')} / ${esc(st.dpiOverride || '原样')}</div></div>
+       <span class="sp"></span><button class="b2" id="btnDoRestore">还原</button></div>`
+    : `<div class="row wrap"><span class="ic">${IC.undo}</span><div><div class="nm">没有未还原的记录</div><div class="mt">需要强制写回设备原本的分辨率与显示大小时用</div></div>
+       <span class="sp"></span><button class="b2" id="btnDoRestore">还原</button></div>`;
   $('btnDoRestore').onclick = async () => {
     // 设备可能已经断开，但「有未还原的改动」记录里存着当时的地址：优先用在线设备，其次用记录地址
     const d = cur();
@@ -1047,44 +1060,63 @@ async function refresh() {
   maybeAutoReconnect();
 }
 // 折中策略：上次用过的设备启动时自动重连（配对过的地址秒连、不打扰其它设备）；新设备仍手动连接
-let lastAutoAt = 0, lastAutoTried = null;
+let lastAutoAt = 0, lastAutoTried = null, lastAutoFailAt = 0;
 async function maybeAutoReconnect() {
   if (localStorage.getItem('syrAutoRe') === '0') return; // 开关关闭
   if (Date.now() - lastAutoAt < 15000) return; // 防抖：15 秒内只尝试一次
+  if (lastAutoFailAt && Date.now() - lastAutoFailAt < 300000) return; // 失败后 5 分钟内不再自动试，别反复留下 offline 记录
   lastAutoAt = Date.now();
   const r = await api.reconnectLast();
   const addr = r && r.addr;
   if (!addr || lastAutoTried === addr) return; // 没有记录，或同一地址已尝试过
   lastAutoTried = addr;
-  if (r && r.ok) { await refresh(); toast('已自动重连上次设备 ' + addr); return; }
-  // 后端已自动开始找回新端口：接着轮询，找到就刷新列表并提示
-  if (r && r.relocating) {
-    toast(r.text || '端口可能变了，正在自动找回新端口…');
-    pollRelocate(null);
-  }
+  if (r && r.ok) { lastAutoFailAt = 0; await refresh(); toast('已自动重连上次设备 ' + addr); return; }
+  lastAutoFailAt = Date.now();
+  // 自动重连只走快路径：失败就停下，等用户到无线页点「找端口」，不在后台扫端口
 }
 
 [].forEach.call(document.querySelectorAll('.nav a'), a => a.onclick = () => switchPage(a.dataset.page));
 $('btnScan').onclick = async () => { await refresh(); if (!$('wifiPanel').hidden) await discoverOnce(); };
 
+let discovering = false;
 async function discoverOnce() {
+  if (discovering) return; // Tab 切换和扫描按钮共用，扫描中再点不重复跑
+  if (!$('btnFindStop').hidden) { toast('正在查找中，先停止再扫描', true); return; }
   const msg = $('wifiScanMsg');
+  const btn = $('btnScan'), btnLabel = btn.textContent;
+  discovering = true;
+  btn.disabled = true; btn.textContent = '扫描中…';
+  showFindStop(false);
   msg.className = 'wm';
   msg.textContent = '正在局域网里找已开启的无线调试…';
   try {
-    const found = await api.discover();
+    const res = await api.discover();
+    const list = Array.isArray(res) ? res : ((res && res.devices) || []);
+    const recovered = Array.isArray(res) ? [] : ((res && res.recovered) || []);
+    const mdnsBlocked = !Array.isArray(res) && !!(res && res.mdnsBlocked);
+    if (recovered.length) {
+      await refresh();
+      recovered.forEach(x => {
+        if (x.via === 'same') return;   // 本来就在线，不重复提示
+        toast((x.name || x.addr) + ' 已连上 ' + x.addr);
+      });
+    }
     // 双保险：后端已排除连着设备，这里再用当前设备列表按 IP 兜一道，避免两处判定不一致时重复显示
     const online = new Set((devs || []).map(d => String(d.id || '').split(':')[0]).filter(Boolean));
-    wifiFound = (Array.isArray(found) ? found : []).filter(f => !online.has(String(f.addr || '').split(':')[0]));
+    wifiFound = list.filter(f => !f.connected && !online.has(String(f.addr || '').split(':')[0]));
     const newOnes = wifiFound.filter(f => f.kind !== 'known');
     const known = wifiFound.filter(f => f.kind === 'known');
     const onlineWifi = (devs || []).some(d => d.via === 'wireless');
     if (!newOnes.length && !known.length) {
-      msg.textContent = onlineWifi
-        ? '没有新的可连接设备，已连接的设备在下方列表里。'
-        : '没扫到无线调试广播。确认手机上那个开关是开着的、屏幕没锁，或用手动输入。';
-      if (!wifiFound.length) {
-        msg.innerHTML = '没扫到无线调试广播。确认手机上开关开着、屏幕没锁，或用手动输入。<button class="b2" id="btnAdbRestart" style="margin-left:8px;padding:2px 9px">重启 adb 服务再扫</button>';
+      if (onlineWifi) {
+        msg.textContent = '没有新的可连接设备，已连接的设备在下方列表里。';
+      } else {
+        msg.innerHTML = '没找到无线调试。确认手机上「无线调试」开着、屏幕没锁，并且和电脑在同一网络。'
+          + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
+          + '<button class="b2 act" id="btnDeep">深度查找本网段</button>'
+          + '<button class="b2" id="btnAdbRestart">重启 adb 服务再扫</button></div>';
+        const bd = $('btnDeep');
+        if (bd) bd.onclick = startDeep;
         const br = $('btnAdbRestart');
         if (br) br.onclick = async () => {
           br.disabled = true;
@@ -1101,15 +1133,23 @@ async function discoverOnce() {
     msg.textContent = newOnes.length && known.length
       ? '上面是新扫到的设备，下面是不发发现信号、靠常用地址找回的设备。'
       : (newOnes.length ? '扫到的设备点右侧「连接」即可。'
-                        : '这些设备不发送发现信号，靠上次用过的地址找回，点「连接」即可。');
+                        : '这些设备不发送发现信号，靠上次用过的地址找回。');
+    // 端口或 IP 失效的别再让用户猜：明确指向单台设备的「找端口」
+    if (known.some(f => f.state === 'fail' || f.state === 'gone' || f.reason === 'moved'))
+      msg.textContent += ' IP 或端口变了，点对应设备的「找端口」，只扫这一台。';
+    if (mdnsBlocked)
+      msg.textContent += ' 当前网络不转发设备广播，已改用主动查找。';
     renderWifiDevs();
-    // 后端可能已自动开始找回端口（无广播 + 常用地址端口失效）：跟着轮询，把进度显示出来
+    // 后台若已有查找任务，接上进度（正常扫描不会自动扫端口）
     try {
       const st0 = await api.relocatePoll();
-      if (st0 && st0.ok && st0.phase === 'running') pollRelocate(null);
+      if (st0 && st0.ok && st0.phase === 'running') pollRelocate(st0.ip, st0.targetName);
     } catch (e) { }
   } catch (e) {
     msg.textContent = '发现过程出错：' + e.message;
+  } finally {
+    discovering = false;
+    btn.disabled = false; btn.textContent = btnLabel;
   }
 }
 function renderWifiDevs() {
@@ -1119,17 +1159,30 @@ function renderWifiDevs() {
     const nm = f.name || f.addr;
     const sub = f.name ? `<div class="addr">${esc(f.addr)}</div>` : '';
     const ip = String(f.addr || '').split(':')[0];
+    const reason = isKnown ? (f.reason || (f.state === 'gone' ? 'offline' : 'other')) : '';
+    let tagText;
+    if (!isKnown) tagText = null;
+    else if (reason === 'moved') tagText = 'IP 变了';
+    else if (f.state === 'gone') tagText = '机器不在线';
+    else if (reason === 'port') tagText = '端口变了';
+    else if (reason === 'auth') tagText = '需重新配对';
+    else tagText = '连不上';
     const tag = isKnown
-      ? `<span class="tag no">常用 · ${f.state === 'gone' ? '机器不在线' : '连不上'}</span>`
+      ? `<span class="tag no">${tagText}</span>`
       : (f.kind === 'connect' ? '<span class="tag">可直连</span>' : '<span class="tag no">需配对</span>');
     const kind = isKnown ? 'connect' : f.kind;
     const note = isKnown && f.note ? `<div class="wnote">${esc(f.note)}</div>` : '';
     const forget = isKnown ? `<button class="b2" data-act="forget" data-addr="${esc(f.addr)}">忘记</button>` : '';
-    // 机器在线、只是端口换了（无线调试每次开关换随机端口）：给一键重新定位
-    const reloc = (isKnown && f.state === 'fail') ? `<button class="b2" data-act="reloc" data-ip="${esc(ip)}">定位端口</button>` : '';
+    // 只有端口/IP 失效才值得找；要重新配对的扫了也没用，别给错按钮
+    const canFind = isKnown && reason !== 'auth' && (f.state === 'fail' || f.state === 'gone' || reason === 'moved');
+    const findLabel = f.alive ? '找端口' : '找回这台';
+    const reloc = canFind
+      ? `<button class="b2 act" data-act="reloc" data-addr="${esc(f.addr)}" data-ip="${esc(ip)}" data-name="${esc(nm)}" data-label="${findLabel}">${findLabel}</button>` : '';
+    const con = (isKnown && f.state === 'gone') ? ''
+      : `<button class="b2" data-act="con" data-addr="${esc(f.addr)}" data-kind="${esc(kind)}">连接</button>`;
     return `<div class="row"><span class="ic">${IC.wifi}</span>
-      <div><div class="nm">${esc(nm)}</div>${sub}${note}</div>
-      <span class="sp"></span>${tag}${reloc}<button class="b2" data-act="con" data-addr="${esc(f.addr)}" data-kind="${esc(kind)}">连接</button>${forget}</div>`;
+      <div class="wmain"><div class="nm">${esc(nm)}</div>${sub}${note}</div>
+      <div class="acts">${tag}${reloc}${con}${forget}</div></div>`;
   }).join('');
   [].forEach.call($('wifiDevs').querySelectorAll('button'), b => {
     if (b.dataset.act === 'forget') b.onclick = async () => {
@@ -1137,61 +1190,131 @@ function renderWifiDevs() {
       toast(r && r.ok ? '已忘记 ' + b.dataset.addr : '忘记失败：' + ((r && r.text) || ''), !(r && r.ok));
       await discoverOnce();
     };
-    else if (b.dataset.act === 'reloc') b.onclick = () => startRelocate(b.dataset.ip, b);
+    else if (b.dataset.act === 'reloc') b.onclick = () => startRelocate(b.dataset.addr, b.dataset.ip, b.dataset.name);
     else b.onclick = () => wifiQuickConnect(b.dataset.addr, b.dataset.kind);
   });
 }
 
-// 端口重新定位：广播收不到时，后台扫端口段找回手机换了的新 adbd 端口，边扫边刷进度
+// 找回/深扫共用一个后台任务：轮询进度、可停止
 let relocTimer = null;
-async function startRelocate(ip, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '定位中…'; }
+function relocBtn(ip) {
+  return $('wifiDevs').querySelector('button[data-act="reloc"][data-ip="' + ip + '"]');
+}
+function resetRelocButtons() {
+  [].forEach.call($('wifiDevs').querySelectorAll('button[data-act="reloc"]'), b => {
+    b.disabled = false; b.textContent = b.dataset.label || '找端口';
+  });
+}
+function showFindStop(on) {
+  const b = $('btnFindStop');
+  if (!b) return;
+  b.hidden = !on;
+  if (!on) return;
+  b.disabled = false; b.textContent = '停止查找';
+  b.onclick = async () => {
+    b.disabled = true; b.textContent = '正在停止…';
+    try { await api.cancelFind(); } catch (e) { b.disabled = false; b.textContent = '停止查找'; }
+  };
+}
+async function startRelocate(addr, ip, name) {
+  const btn = relocBtn(ip);
+  const label = btn ? (btn.dataset.label || '找端口') : '找端口';
+  if (btn) { btn.disabled = true; btn.textContent = label + '…'; }
   const msg = $('wifiScanMsg'); msg.className = 'wm';
-  msg.textContent = '正在确认手机在线…';
+  msg.textContent = '正在定位设备…';
   try {
-    const r = await api.relocate(ip);
+    const r = await api.relocate(addr, ip);
     if (!r || !r.ok) {
-      msg.textContent = (r && r.error) || '定位没启动';
-      if (btn) { btn.disabled = false; btn.textContent = '定位端口'; }
+      msg.className = 'wm bad';
+      msg.textContent = (r && (r.error || r.text)) || '找端口没启动';
+      if (btn) { btn.disabled = false; btn.textContent = label; }
       return;
     }
-    pollRelocate(btn);
+    showFindStop(true);
+    pollRelocate(ip, name);
   } catch (e) {
-    msg.textContent = '定位出错：' + e.message;
-    if (btn) { btn.disabled = false; btn.textContent = '定位端口'; }
+    msg.className = 'wm bad';
+    msg.textContent = '找端口出错：' + e.message;
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
-function pollRelocate(btn) {
+async function startDeep() {
+  const msg = $('wifiScanMsg'); msg.className = 'wm';
+  msg.textContent = '正在准备深度查找…';
+  try {
+    const r = await api.deepScan();
+    if (!r || !r.ok) {
+      msg.className = 'wm bad';
+      msg.textContent = (r && (r.error || r.text)) || '深度查找没启动';
+      return;
+    }
+    showFindStop(true);
+    pollRelocate('', '');
+  } catch (e) {
+    msg.className = 'wm bad';
+    msg.textContent = '深度查找出错：' + e.message;
+  }
+}
+function pollRelocate(ip, name) {
   if (relocTimer) clearInterval(relocTimer);
+  showFindStop(true);
   const msg = $('wifiScanMsg');
-  let ticks = 0, idle = 0;
+  let ticks = 0, idle = 0, inFlight = false, targetIp = ip || '', targetName = name || '';
   relocTimer = setInterval(async () => {
-    if (++ticks > 120) { clearInterval(relocTimer); relocTimer = null; return; } // 最多跟 2 分多钟
+    if (inFlight) return; // 上一次还没回来，别堆请求
+    inFlight = true;
+    if (++ticks > 300) { clearInterval(relocTimer); relocTimer = null; inFlight = false; showFindStop(false); resetRelocButtons(); return; }
     let st;
-    try { st = await api.relocatePoll(); } catch (e) { return; }
+    try { st = await api.relocatePoll(); } catch (e) { inFlight = false; return; }
+    inFlight = false;
     if (!st || !st.ok) {
-      if (++idle > 5) { clearInterval(relocTimer); relocTimer = null; }
+      if (++idle > 5) { clearInterval(relocTimer); relocTimer = null; showFindStop(false); resetRelocButtons(); }
       return;
     }
     idle = 0;
-    if (st.phase === 'idle') return;
+    if (st.phase === 'idle') {
+      clearInterval(relocTimer); relocTimer = null; showFindStop(false); resetRelocButtons();
+      return;
+    }
+    if (!targetIp && st.ip) targetIp = st.ip;
+    if (!targetName && st.targetName) targetName = st.targetName;
+    const isDeep = st.kind === 'deep';
     if (st.phase === 'running') {
       const pct = st.total ? Math.min(99, Math.round(st.scanned / st.total * 100)) : 0;
-      msg.textContent = `正在局域网里找回新端口… ${pct}%（${st.note || ''}）`;
+      if (!isDeep && targetIp) {
+        const b = relocBtn(targetIp);
+        if (b) { b.disabled = true; b.textContent = (b.dataset.label || '找端口') + (pct > 0 ? ' ' + pct + '%' : '…'); }
+      }
+      msg.className = 'wm';
+      if (isDeep) {
+        msg.textContent = pct > 0
+          ? `正在检查 ${st.hostsTotal || ''} 台在线设备… ${pct}%（找到后自动验证）`
+          : `深度查找：${st.note || '准备中'}`;
+      } else {
+        msg.textContent = pct > 0
+          ? `正在为 ${targetName || targetIp} 找新端口… ${pct}%`
+          : `正在为 ${targetName || targetIp} 找端口… ${st.note || '准备中'}`;
+      }
       return;
     }
     clearInterval(relocTimer); relocTimer = null;
+    showFindStop(false);
+    resetRelocButtons();
     if (st.phase === 'found') {
+      const foundIp = String(st.addr || targetIp).split(':')[0];
+      wifiFound = wifiFound.filter(f => {
+        const fip = String(f.addr || '').split(':')[0];
+        return fip !== foundIp && fip !== targetIp;
+      });
+      renderWifiDevs();
       await refresh();
-      await discoverOnce();
-      msg.className = 'wm ok';
-      msg.textContent = '已找回新端口 ' + (st.addr || '') + '，设备已在下方列表里。';
-      toast('已定位到新端口 ' + (st.addr || ''));
+      const unauth = (st.found || []).some(x => x && x.unauthorized);
+      msg.className = unauth ? 'wm bad' : 'wm ok';
+      msg.textContent = st.note || ('已找回并连上 ' + (st.addr || ''));
+      if (!unauth) toast('已连接 ' + (st.addr || ''));
     } else {
-      await discoverOnce();
       msg.className = 'wm bad';
       msg.textContent = st.note || '没能找回端口。';
-      if (btn) { btn.disabled = false; btn.textContent = '定位端口'; }
     }
   }, 1200);
 }

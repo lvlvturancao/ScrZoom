@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -90,6 +90,9 @@ public class MainForm : Form
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
     [DllImport("user32.dll")] static extern bool AreDpiAwarenessContextsEqual(IntPtr a, IntPtr b);
+    // 同网段主机查 MAC：比解析中文 arp -a 稳，也不受字段顺序影响
+    [DllImport("iphlpapi.dll", ExactSpelling = true)]
+    static extern int SendARP(int destIp, int srcIp, byte[] macAddr, ref uint phyAddrLen);
     // PER_MONITOR_AWARE_V2 的上下文句柄是 -4；只有拿到它才说明 app.manifest 真的嵌进 exe 了。
     static string AwarenessName(IntPtr h)
     {
@@ -509,8 +512,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.2.0";
-    public const int AppVersionCode = 5;
+    public const string AppVersion = "0.3.0";
+    public const int AppVersionCode = 6;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -794,6 +797,8 @@ public class MainForm : Form
             case "reconnect-last": return await ReconnectLast();
             case "wifi-relocate": return await RelocateStart(p);
             case "wifi-relocate-poll": return RelocatePoll(p);
+            case "wifi-deep-scan": return await DeepScanStart(p);
+            case "wifi-find-cancel": return CancelWifiJob();
         }
         return Err("未知操作 " + action);
     }
@@ -1410,25 +1415,19 @@ public class MainForm : Form
         return list;
     }
 
-    async Task<object> WifiDiscover()
+    class MdnsScan { public List<WifiDev> devs = new List<WifiDev>(); public int rawEntries; public string raw = ""; }
+
+    // 广播只做发现：不在这里连设备，也不在这里扫端口
+    async Task<MdnsScan> CollectMdns(int rounds, int perCallMs, int gapMs)
     {
-        var found = new List<object>();
-        if (adbExe == null) return found;
-        // 已连接的设备不再进扫描列表（下方设备列表已有），这里只拿它做排除依据
-        var connected = await ConnectedWireless();
-        var connIps = new HashSet<string>(connected.Select(c => c.Split(':')[0]), StringComparer.OrdinalIgnoreCase);
-        var names = LoadNames();
+        var res = new MdnsScan();
         var byIp = new Dictionary<string, WifiDev>();
-        // adb 的 mDNS 查询不稳定：一次查询经常漏设备，多轮查询合并提高发现率；
-        // 全部为空时再补一轮（mDNS 后端可能短暂失聪，这里不重启 adb server，避免打断正在投屏的会话）
-        bool mdnsEmpty = true;
-        string rawSample = "";
-        int rawEntries = 0;
-        Func<Task> parseMdns = async () =>
+        for (int attempt = 0; attempt < rounds; attempt++)
         {
-            var r = await Run(adbExe, new[] { "mdns", "services" }, 7000);
-            if (rawSample.Length == 0 && r.text.Trim().Length > 0) rawSample = r.text;
-            foreach (var line in r.text.Split('\n'))
+            var r = await Run(adbExe, new[] { "mdns", "services" }, perCallMs);
+            string text = r.text ?? "";
+            if (res.raw.Length == 0 && text.Trim().Length > 0) res.raw = text;
+            foreach (var line in text.Split('\n'))
             {
                 var l = line.Trim();
                 if (l.Length == 0 || l.StartsWith("List of")) continue;
@@ -1440,12 +1439,11 @@ public class MainForm : Form
                     if (s.Length == 2 && s[1].Length > 0 && s[1].All(char.IsDigit)) { addr = x; break; }
                 }
                 if (addr == null) continue;
-                rawEntries++;
+                res.rawEntries++;
                 name = string.Join(" ", tokens.Where(t => t != addr)
                     .Select(t => t.Replace("._adb-tls-connect._tcp", "").Replace("._adb-tls-pairing._tcp", ""))
                     .Where(t => t.Length > 0));
                 var ip = addr.Split(':')[0];
-                if (connIps.Contains(ip)) continue;   // 这台已经连着，扫描列表不再重复
                 bool pairing = l.IndexOf("pairing", StringComparison.OrdinalIgnoreCase) >= 0;
                 var ser = System.Text.RegularExpressions.Regex.Match(name, "adb-([0-9A-Za-z]+)-");
                 WifiDev dev;
@@ -1454,107 +1452,264 @@ public class MainForm : Form
                 if (string.IsNullOrEmpty(dev.serial) && ser.Success) dev.serial = ser.Groups[1].Value;
                 if (pairing) { if (dev.pairAddr == null) dev.pairAddr = addr; }
                 else if (dev.connAddr == null) dev.connAddr = addr;
-                mdnsEmpty = false;
             }
-        };
-        // 设备的定时广播会间歇性断档（息屏时尤其明显）：先保证 3 轮用于多设备召回，
-        // 之后一旦有结果就停；一直空就等满约 9 秒，别让一次扫描白跑
-        for (int attempt = 0; attempt < 10; attempt++)
-        {
-            await parseMdns();
-            if (attempt >= 2 && byIp.Count > 0) break;
-            if (attempt < 9) await Task.Delay(900);
+            if (attempt >= 1 && byIp.Count > 0) break;
+            if (attempt + 1 < rounds) await Task.Delay(gapMs);
         }
-        if (mdnsEmpty)
-        {
-            await Task.Delay(1200);
-            await parseMdns();
-        }
-        foreach (var dev in byIp.Values)
-            found.Add(new Dictionary<string, object> {
-                { "addr", dev.connAddr ?? dev.pairAddr ?? dev.ip },
-                { "kind", dev.connAddr != null ? "connect" : "pairing" },
-                { "connected", false },
-                { "name", LookupName(names, dev.serial, dev.connAddr ?? dev.ip) } });
+        res.devs = byIp.Values.ToList();
+        return res;
+    }
 
-        // 有些设备从不发送发现信号（系统没做这个广播），只扫广播就永远列不出它。
-        // 这里补一路：把常用地址簿里、本轮没出现的地址直接探一次。
-        var seenIps = new HashSet<string>(byIp.Keys, StringComparer.OrdinalIgnoreCase);
-        var todo = WifiBook().Where(a => { var ip = a.Split(':')[0]; return !seenIps.Contains(ip) && !connIps.Contains(ip); }).ToList();
-        if (todo.Count > 0)
+    class ProbeOutcome { public WifiEntry entry; public Dictionary<string, object> item; }
+
+    Dictionary<string, object> KnownItem(WifiEntry e, string name, string state, string reason, string note, bool alive)
+    {
+        return new Dictionary<string, object> {
+            { "addr", e.addr }, { "kind", "known" }, { "known", true }, { "connected", false },
+            { "state", state }, { "reason", reason }, { "note", note }, { "name", name },
+            { "mac", e.mac }, { "serial", e.serial }, { "mdnsId", e.mdnsId },
+            { "alive", alive },
+            { "hasIdentity", !string.IsNullOrEmpty(e.mac) || !string.IsNullOrEmpty(e.serial) || !string.IsNullOrEmpty(e.mdnsId) },
+            { "canRecover", true } };
+    }
+
+    // 普通扫描：广播 → 地址簿探活 → ARP 找新 IP + 旧端口一次尝试。
+    // 不自动扫端口；端口也变了就停在卡片，等用户点「找端口」。
+    async Task<object> WifiDiscover()
+    {
+        var devices = new List<object>();
+        var recovered = new List<object>();
+        if (adbExe == null)
+            return new Dictionary<string, object> { { "devices", devices }, { "recovered", recovered }, { "mdnsBlocked", false } };
+
+        await CleanupOffline();
+        var connected = await ConnectedWireless();
+        var connIps = new HashSet<string>(connected.Select(c => c.Split(':')[0]), StringComparer.OrdinalIgnoreCase);
+        var names = LoadNames();
+        var entries = LoadWifiEntries();
+
+        var mdns = await CollectMdns(3, 2500, 400);
+        bool mdnsEmpty = mdns.devs.Count == 0;
+        var seenIps = new HashSet<string>(connIps, StringComparer.OrdinalIgnoreCase);
+        var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string last = LoadLastDevice();
+
+        // 广播里同一台设备出现在新 IP：是上次设备就直接接回，其它设备给用户点
+        foreach (var dev in mdns.devs)
         {
-            var tasks = todo.Select(a => ProbeKnown(a, names)).ToArray();
-            await Task.WhenAll(tasks);
-            foreach (var t in tasks)
+            if (string.IsNullOrEmpty(dev.ip) || seenIps.Contains(dev.ip)) continue;
+            string addr = dev.connAddr ?? dev.pairAddr ?? dev.ip;
+            var entry = entries.FirstOrDefault(e =>
+                (!string.IsNullOrEmpty(dev.serial) &&
+                 ((!string.IsNullOrEmpty(e.serial) && string.Equals(e.serial, dev.serial, StringComparison.OrdinalIgnoreCase)) ||
+                  (!string.IsNullOrEmpty(e.mdnsId) && string.Equals(e.mdnsId, dev.serial, StringComparison.OrdinalIgnoreCase)))) ||
+                e.addr.Split(':')[0] == dev.ip);
+            string name = LookupName(names, dev.serial, addr);
+            if (name.Length == 0 && entry != null) name = entry.name;
+            if (entry != null && dev.connAddr != null && entry.addr != dev.connAddr)
             {
-                var item = t.Result;
-                if (item != null) found.Add(item);
+                bool isLast = string.Equals(entry.addr, last, StringComparison.OrdinalIgnoreCase);
+                if (isLast)
+                {
+                    var cv = await ConnectVerified(dev.connAddr, 6000);
+                    if ((bool)cv["ok"])
+                    {
+                        var id = await ReadDeviceIdentity(dev.connAddr);
+                        bool same = string.IsNullOrEmpty(entry.serial) || string.IsNullOrEmpty(id.serial)
+                                    || IdEq(entry.serial, id.serial);
+                        if (same)
+                        {
+                            await LearnIdentity(dev.connAddr, dev.serial ?? entry.mdnsId, name.Length > 0 ? name : entry.name, entry.addr);
+                            SaveLastDevice(dev.connAddr);
+                            handled.Add(entry.addr);
+                            recovered.Add(new Dictionary<string, object> { { "oldAddr", entry.addr }, { "addr", dev.connAddr }, { "name", name }, { "via", "mdns" } });
+                            seenIps.Add(dev.ip);
+                            Log("mDNS 换 IP 认领 " + entry.addr + " → " + dev.connAddr);
+                            continue;
+                        }
+                        try { await Run(adbExe, new[] { "disconnect", dev.connAddr }, 3000); } catch { }
+                        Log("mDNS 认领身份不符，不覆盖 " + dev.connAddr + " 原 serial=" + entry.serial + " 新 serial=" + id.serial);
+                    }
+                }
+                devices.Add(new Dictionary<string, object> {
+                    { "addr", dev.connAddr }, { "kind", "connect" }, { "connected", false },
+                    { "name", name }, { "movedFrom", entry.addr },
+                    { "note", "上次的设备换了 IP，点连接即可。" }, { "canRecover", true } });
+                handled.Add(entry.addr);
+                seenIps.Add(dev.ip);
+                continue;
+            }
+            devices.Add(new Dictionary<string, object> {
+                { "addr", addr }, { "kind", dev.connAddr != null ? "connect" : "pairing" },
+                { "connected", false }, { "name", name } });
+            seenIps.Add(dev.ip);
+        }
+
+        // 地址簿逐台探活（并发，最多 8 台）
+        var pending = entries.Where(e => !handled.Contains(e.addr) && !seenIps.Contains(e.addr.Split(':')[0])).ToList();
+        var probeTasks = pending.Select(e => ProbeEntry(e, names)).ToArray();
+        await Task.WhenAll(probeTasks);
+        var missing = new List<WifiEntry>();
+        foreach (var t in probeTasks)
+        {
+            var o = t.Result;
+            if (o == null) continue;
+            if (o.item.ContainsKey("connected") && Convert.ToBoolean(o.item["connected"]))
+            {
+                seenIps.Add(o.entry.addr.Split(':')[0]);
+                recovered.Add(new Dictionary<string, object> { { "oldAddr", o.entry.addr }, { "addr", o.entry.addr }, { "name", o.entry.name }, { "via", "same" } });
+                continue;
+            }
+            devices.Add(o.item);
+            missing.Add(o.entry);
+            seenIps.Add(o.entry.addr.Split(':')[0]);
+        }
+
+        // 换 IP：ARP 按 MAC 找新地址，只试一次旧端口，不扫端口段。
+        // 换 WiFi 后随机 MAC 可能变，找不到就留给「深度查找」。
+        bool canArp = missing.Any(e => !string.IsNullOrEmpty(e.mac));
+        if (canArp)
+        {
+            var lan = GetLanTarget(missing[0].addr.Split(':')[0]);
+            var hosts = await ArpSweep(lan, null);
+            var recoverTasks = new List<Task>();
+            foreach (var e in missing)
+            {
+                if (string.IsNullOrEmpty(e.mac)) continue;
+                string oldIp = e.addr.Split(':')[0];
+                string oldPort = e.addr.Contains(":") ? e.addr.Split(':')[1] : "";
+                if (oldPort.Length == 0) continue;
+                // 代理 ARP 会让多个 IP 共用 MAC；有歧义就不自动认领
+                var macHosts = hosts.Where(h => string.Equals(h.mac, e.mac, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (macHosts.Count != 1) continue;
+                foreach (var h in macHosts)
+                {
+                    if (h.ip == oldIp) continue;
+                    string target = h.ip + ":" + oldPort;
+                    WifiEntry entry = e;
+                    recoverTasks.Add(Task.Run(async () =>
+                    {
+                        var cv = await ConnectVerified(target, 6000);
+                        if (!(bool)cv["ok"]) return;
+                        var id = await ReadDeviceIdentity(target);
+                        if (!IdentityMatches(entry, id))
+                        {
+                            try { await Run(adbExe, new[] { "disconnect", target }, 3000); } catch { }
+                            Log("ARP 认领被身份校验拒绝 " + target + " 原 serial=" + entry.serial + " 新 serial=" + id.serial);
+                            return;
+                        }
+                        await LearnIdentity(target, entry.mdnsId, entry.name, entry.addr);
+                        lock (recovered) recovered.Add(new Dictionary<string, object> { { "oldAddr", entry.addr }, { "addr", target }, { "name", entry.name }, { "via", "arp" } });
+                        if (LoadLastDevice() == entry.addr) SaveLastDevice(target);
+                        Log("ARP 换 IP 认领 " + entry.addr + " → " + target);
+                    }));
+                }
+            }
+            await Task.WhenAll(recoverTasks);
+
+            var recoveredOld = new HashSet<string>(recovered
+                .OfType<Dictionary<string, object>>()
+                .Select(x => Convert.ToString(x["oldAddr"])), StringComparer.OrdinalIgnoreCase);
+            if (recoveredOld.Count > 0)
+            {
+                devices.RemoveAll(o =>
+                {
+                    var d = o as Dictionary<string, object>;
+                    return d != null && recoveredOld.Contains(Convert.ToString(d["addr"]));
+                });
+                missing.RemoveAll(e => recoveredOld.Contains(e.addr));
             }
         }
 
-        Log("wifi-discover 待连接 " + found.Count + " 台（已连接 IP: " + string.Join(",", connIps) + "；广播条目 " + rawEntries + " 条，入列 " + byIp.Count + " 台；常用地址探了 " + todo.Count + " 个）");
-        if (byIp.Count == 0)
-            Log("wifi-discover 无广播，mdns 原始输出: " + (rawSample.Length > 0 ? rawSample.Replace("\r", "").Replace("\n", " | ") : "(空)"));
-        AutoRelocate(found, byIp.Count);
-        return found;
+        Log("wifi-discover 待连接 " + devices.Count + " 台（已连接 IP: " + string.Join(",", connIps) +
+            "；广播条目 " + mdns.rawEntries + " 条，入列 " + mdns.devs.Count + " 台；地址簿 " + entries.Count +
+            " 条，找回 " + recovered.Count + " 台）");
+        if (mdnsEmpty)
+            Log("wifi-discover 无广播，mdns 原始输出: " + (mdns.raw.Length > 0 ? mdns.raw.Replace("\r", "").Replace("\n", " | ") : "(空)"));
+
+        return new Dictionary<string, object> {
+            { "devices", devices }, { "recovered", recovered }, { "mdnsBlocked", mdnsEmpty } };
     }
 
-    // 广播一条都收不到、常用地址却在线只是端口连不上：几乎可以断定是端口换了。
-    // 这里自己发起一次后台找回，每台 IP 五分钟冷却，避免反复扫。
-    Dictionary<string, DateTime> relocAutoAt = new Dictionary<string, DateTime>();
-    void AutoRelocate(List<object> found, int mdnsCount)
+    // 给只关心设备列表的内部调用用（手动连接的回退路径）
+    async Task<List<object>> DiscoverDevices()
     {
-        if (mdnsCount > 0) return;
-        if (reloc != null && reloc.running) return;
-        var failIp = found.OfType<Dictionary<string, object>>()
-            .Where(f => "known".Equals(Convert.ToString(f["kind"])) && "fail".Equals(Convert.ToString(f["state"])))
-            .Select(f => Convert.ToString(f["addr"]).Split(':')[0])
-            .FirstOrDefault();
-        if (failIp == null) return;
-        DateTime last;
-        if (relocAutoAt.TryGetValue(failIp, out last) && (DateTime.Now - last).TotalMinutes < 5) return;
-        relocAutoAt[failIp] = DateTime.Now;
-        var st = new RelocateState { ip = failIp, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在自动找回新端口…" };
-        reloc = st;
-        var _ = RelocateLoop(st);
-        Log("relocate 自动触发 " + failIp);
+        var obj = await WifiDiscover() as Dictionary<string, object>;
+        if (obj == null) return new List<object>();
+        var list = obj.ContainsKey("devices") ? obj["devices"] as List<object> : null;
+        return list ?? new List<object>();
     }
 
-    // 探一个常用地址：先确认机器在不在这个网，在才试连，避免干等超时
-    async Task<Dictionary<string, object>> ProbeKnown(string addr, Dictionary<string, string> names)
+    // 探一台地址簿设备：先确认机器在不在，再比对 MAC，最后连接并验证状态
+    async Task<ProbeOutcome> ProbeEntry(WifiEntry e, Dictionary<string, string> names)
     {
-        string ip = addr.Split(':')[0];
+        string ip = e.addr.Split(':')[0];
         var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
         bool alive = pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) >= 0;
-        string state = "gone", note = "这台机器现在不在线，WiFi 可能断了或者地址变了";
-        if (alive)
+        string mac = alive ? GetMac(ip) : "";
+        string name = e.name;
+        if (name.Length == 0) name = LookupName(names, e.serial, e.addr);
+
+        if (!alive)
+            return new ProbeOutcome { entry = e, item = KnownItem(e, name, "gone", "offline",
+                "这台机器不在线：可能换了 IP，或者 WiFi/息屏断开了。", false) };
+        if (!string.IsNullOrEmpty(e.mac) && !string.IsNullOrEmpty(mac) && !string.Equals(e.mac, mac, StringComparison.OrdinalIgnoreCase))
+            return new ProbeOutcome { entry = e, item = KnownItem(e, name, "gone", "moved",
+                "这个 IP 现在是别的设备，手机可能换了 IP。", true) };
+
+        var cv = await ConnectVerified(e.addr, 5000);
+        if ((bool)cv["ok"])
         {
-            var cr = await Run(adbExe, new[] { "connect", addr }, 6000);
-            string t = cr.text.Trim();
-            if (t.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
-                || t.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0)
-            { state = "on"; note = ""; }
-            else state = "fail";
-            if (state == "fail") note = KnownFailHint(t);
+            var id = await ReadDeviceIdentity(e.addr);
+            if (!IdentityMatches(e, id))
+            {
+                try { await Run(adbExe, new[] { "disconnect", e.addr }, 3000); } catch { }
+                string other = id.model.Length > 0 ? id.model : e.addr;
+                return new ProbeOutcome { entry = e, item = KnownItem(e, name, "gone", "moved",
+                    "这个 IP 现在连到的是另一台设备（" + other + "），没有覆盖地址簿；手机可能换了 IP。", true) };
+            }
+            await LearnIdentity(e.addr, e.mdnsId, name, null);
+            return new ProbeOutcome { entry = e, item = new Dictionary<string, object> {
+                { "addr", e.addr }, { "name", name }, { "connected", true } } };
         }
-        if (state == "on") return null;   // 已经连上了，交给下方设备列表，扫描列表不再重复
-        return new Dictionary<string, object> {
-            { "addr", addr }, { "kind", "known" }, { "known", true },
-            { "connected", false }, { "state", state },
-            { "note", note }, { "name", LookupName(names, "", addr) } };
+        string st = Convert.ToString(cv["state"]);
+        if (st == "unauthorized")
+            return new ProbeOutcome { entry = e, item = KnownItem(e, name, "fail", "auth",
+                "找到了无线调试，但需要授权：在手机上点允许，或重新配对。", true) };
+        string note = st == "offline"
+            ? "这个地址没有可用的无线调试：端口可能变了，点「找端口」重新扫描。"
+            : FailNote("port", Convert.ToString(cv["text"]));
+        return new ProbeOutcome { entry = e, item = KnownItem(e, name, "fail", "port", note, true) };
     }
 
-    static string KnownFailHint(string raw)
+    // adb connect 的报错跟着系统语言变：英文 refused、中文「积极拒绝 (10061)」都要认。
+    // 分类给前端用：port 类才值得去扫端口，auth 类得重新配对，其余保留原始报错。
+    static string FailReason(string raw)
     {
         string t = raw ?? "";
-        if (t.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0)
-            return "端口不接受连接：无线调试的端口每次开关都会换，点「定位端口」让程序自动找回新端口";
+        if (t.IndexOf("10061", StringComparison.Ordinal) >= 0
+            || t.IndexOf("积极拒绝", StringComparison.Ordinal) >= 0
+            || t.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0
+            || t.IndexOf("cannot connect", StringComparison.OrdinalIgnoreCase) >= 0
+            || t.IndexOf("No connection could be made", StringComparison.OrdinalIgnoreCase) >= 0
+            || t.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0
+            || t.Trim().Length == 0)
+            return "port";
         if (t.IndexOf("authenticat", StringComparison.OrdinalIgnoreCase) >= 0
             || t.IndexOf("unauthorized", StringComparison.OrdinalIgnoreCase) >= 0
             || t.IndexOf("offline", StringComparison.OrdinalIgnoreCase) >= 0)
-            return "要重新配对：手机上无线调试页填配对码再连一次";
-        if (t.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 || t.Length == 0)
-            return "这台机器没回应：多半是端口变了，去手机无线调试页面上看当前端口";
+            return "auth";
+        return "other";
+    }
+
+    static string FailNote(string reason, string raw)
+    {
+        if (reason == "port")
+            return "端口可能变了：手机上的「无线调试」每次开关都会换一个端口，点「找端口」自动找回。";
+        if (reason == "auth")
+            return "需要重新配对：在手机无线调试页用配对码再配一次，配好后不用再输。";
+        string t = (raw ?? "").Replace("\r", "").Replace("\n", " ").Trim();
+        if (t.Length > 80) t = t.Substring(0, 80) + "…";
         return "连不上：" + t;
     }
 
@@ -1568,53 +1723,300 @@ public class MainForm : Form
         return new Dictionary<string, object> { { "ok", s.ok }, { "text", s.ok ? "ok" : s.text } };
     }
 
-    // 自动重连：先试上次那台，不行再依次试常用地址簿里的其它台
+    // ── 无线身份：同网段 MAC / 网段 / 连接验证 ──
+
+    static string GetMac(string ip)
+    {
+        try
+        {
+            var bytes = IPAddress.Parse(ip).GetAddressBytes();
+            if (bytes.Length != 4) return "";
+            int dest = BitConverter.ToInt32(bytes, 0);
+            byte[] mac = new byte[6];
+            uint len = 6;
+            if (SendARP(dest, 0, mac, ref len) != 0 || len < 6) return "";
+            var parts = new string[len];
+            bool allZero = true;
+            for (int i = 0; i < len; i++) { parts[i] = mac[i].ToString("x2"); if (mac[i] != 0) allZero = false; }
+            return allZero ? "" : string.Join("-", parts);
+        }
+        catch { return ""; }
+    }
+
+    class LanTarget { public string localIp = "", gateway = ""; public int prefix; }
+    class LanHost { public string ip = "", mac = ""; public bool gateway; }
+
+    static uint IpToInt(string ip)
+    {
+        var b = IPAddress.Parse(ip).GetAddressBytes();
+        return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];
+    }
+    static string IntToIp(uint v) { return (v >> 24) + "." + ((v >> 16) & 255) + "." + ((v >> 8) & 255) + "." + (v & 255); }
+
+    static bool SameSubnet(string a, int prefix, string b)
+    {
+        try
+        {
+            if (prefix < 0 || prefix > 32) return false;
+            uint mask = prefix == 0 ? 0 : 0xffffffffu << (32 - prefix);
+            return (IpToInt(a) & mask) == (IpToInt(b) & mask);
+        }
+        catch { return false; }
+    }
+
+    LanTarget GetLanTarget(string preferIp)
+    {
+        var list = new List<LanTarget>();
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+            var props = ni.GetIPProperties();
+            string gw = "";
+            foreach (var g in props.GatewayAddresses)
+                if (g.Address != null && g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any))
+                { gw = g.Address.ToString(); break; }
+            foreach (var ua in props.UnicastAddresses)
+            {
+                if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                string ip = ua.Address.ToString();
+                if (ip.StartsWith("127.") || ip.StartsWith("169.254.")) continue;
+                list.Add(new LanTarget { localIp = ip, prefix = ua.PrefixLength, gateway = gw });
+            }
+        }
+        if (list.Count == 0) return null;
+        if (!string.IsNullOrEmpty(preferIp))
+            foreach (var t in list) if (SameSubnet(t.localIp, t.prefix, preferIp)) return t;
+        var withGw = list.FirstOrDefault(t => t.gateway.Length > 0);
+        return withGw != null ? withGw : list[0];
+    }
+
+    // 先用 ping 找在线主机（254 个地址约 1-2 秒），再只对这些主机查 MAC。
+    // 直接对全段 SendARP 在离线地址上会一个个等超时，实测要 40 多秒。
+    async Task<List<LanHost>> ArpSweep(LanTarget lan, RelocateState st)
+    {
+        var hosts = new List<LanHost>();
+        if (lan == null) return hosts;
+        int prefix = lan.prefix;
+        if (prefix < 24) prefix = 24;
+        if (prefix > 30) return hosts;
+        uint mask = 0xffffffffu << (32 - prefix);
+        uint net = IpToInt(lan.localIp) & mask;
+        uint broadcast = net | ~mask;
+        uint start = net + 1, end = broadcast - 1;
+        var ips = new List<string>();
+        for (uint v = start; v <= end; v++)
+        {
+            string hostIp = IntToIp(v);
+            if (hostIp != lan.localIp) ips.Add(hostIp);
+        }
+
+        var live = new List<string>();
+        var sem = new SemaphoreSlim(64);
+        var tasks = new List<Task>();
+        foreach (var hostIp in ips)
+        {
+            if (st != null && st.cancel) break;
+            string ip = hostIp;
+            await sem.WaitAsync();
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    using (var ping = new Ping())
+                    {
+                        var reply = await ping.SendPingAsync(ip, 350);
+                        if (reply.Status == IPStatus.Success) lock (live) live.Add(ip);
+                    }
+                }
+                catch { }
+                finally { sem.Release(); }
+            }));
+        }
+        await Task.WhenAll(tasks);
+
+        var macTasks = new List<Task>();
+        foreach (var ip0 in live.ToList())
+        {
+            if (st != null && st.cancel) break;
+            string ip = ip0;
+            macTasks.Add(Task.Run(() =>
+            {
+                string mac = GetMac(ip);
+                if (!string.IsNullOrEmpty(mac))
+                    lock (hosts) hosts.Add(new LanHost { ip = ip, mac = mac, gateway = ip == lan.gateway });
+            }));
+        }
+        await Task.WhenAll(macTasks);
+        return hosts.OrderBy(h => IpToInt(h.ip)).ToList();
+    }
+
+    async Task<string> DeviceState(string addr)
+    {
+        var r = await Run(adbExe, new[] { "devices" }, 6000);
+        foreach (var line in (r.text ?? "").Split('\n'))
+        {
+            var p = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length >= 2 && string.Equals(p[0], addr, StringComparison.OrdinalIgnoreCase)) return p[1];
+        }
+        return "";
+    }
+
+    // adb 的 "connected to" 不代表可用：OPPO 等设备的专有端口也会先连上再变 offline。
+    // 只有 adb devices 显示 device，并且 shell 能回声，才算真正连上。
+    async Task<Dictionary<string, object>> ConnectVerified(string addr, int waitMs)
+    {
+        var r = await Run(adbExe, new[] { "connect", addr }, 8000);
+        string text = (r.text ?? "").Trim();
+        string low = text.ToLowerInvariant();
+        // 不在这里凭提示语判授权：OPPO 这类专有服务也会回 failed to authenticate。
+        // 以 adb devices 的最终状态为准，避免留下 offline 记录。
+        if (low.Contains("cannot connect") || low.Contains("refused") || low.Contains("failed to connect")
+            || low.Contains("failed to get feature set"))
+        {
+            // 失败的连接不要留在 adb devices 里，否则下次扫描会把它当 offline 设备
+            try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+            return new Dictionary<string, object> { { "ok", false }, { "state", "closed" }, { "text", text } };
+        }
+
+        var sw = Stopwatch.StartNew();
+        string st = "";
+        while (sw.ElapsedMilliseconds < waitMs)
+        {
+            st = await DeviceState(addr);
+            if (st == "device")
+            {
+                var echo = await AdbT(3000, addr, "shell", "echo", "ok");
+                if ((echo.text ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return new Dictionary<string, object> { { "ok", true }, { "state", "device" }, { "text", text } };
+            }
+            else if (st == "unauthorized")
+                return new Dictionary<string, object> { { "ok", false }, { "state", "unauthorized" }, { "text", text } };
+            await Task.Delay(350);
+        }
+        try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+        return new Dictionary<string, object> { { "ok", false }, { "state", st.Length > 0 ? st : "offline" }, { "text", text } };
+    }
+
+    async Task CleanupOffline()
+    {
+        var r = await Run(adbExe, new[] { "devices" }, 6000);
+        foreach (var line in (r.text ?? "").Split('\n'))
+        {
+            var p = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length >= 2 && p[1] == "offline" && p[0].Contains(":"))
+            {
+                await Run(adbExe, new[] { "disconnect", p[0] }, 3000);
+                Log("清理 offline 无线记录 " + p[0]);
+            }
+        }
+    }
+
+    // 只读身份：不写地址簿，供「先确认是不是同一台」用
+    async Task<DeviceIdentity> ReadDeviceIdentity(string addr)
+    {
+        var id = new DeviceIdentity();
+        id.mac = GetMac(addr.Split(':')[0]);
+        var s = await AdbT(3000, addr, "shell", "getprop", "ro.serialno");
+        string serial = (s.text ?? "").Trim();
+        if (serial.Length == 0 || serial.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var a = await AdbT(3000, addr, "shell", "settings", "get", "secure", "android_id");
+            string aid = (a.text ?? "").Trim();
+            serial = aid.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ? "" : aid;
+        }
+        var m = await AdbT(3000, addr, "shell", "getprop", "ro.product.model");
+        string model = (m.text ?? "").Trim();
+        if (model.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0) model = "";
+        id.serial = serial;
+        id.model = model;
+        return id;
+    }
+
+    // 连接成功后才学身份：MAC 用于同网段找新 IP，serial/名称用于跨地址认人
+    async Task LearnIdentity(string addr, string mdnsId, string fallbackName, string oldAddr = null)
+    {
+        var id = await ReadDeviceIdentity(addr);
+        string model = id.model.Length > 0 ? id.model : (fallbackName ?? "");
+        if (!string.IsNullOrEmpty(model))
+        {
+            RememberName(addr, model);
+            if (!string.IsNullOrEmpty(id.serial)) RememberName(id.serial, model);
+            if (!string.IsNullOrEmpty(mdnsId)) RememberName(mdnsId, model);
+        }
+        RememberWifi(addr, id.mac, id.serial, mdnsId, model, oldAddr);
+        Log("identity " + addr + " mac=" + id.mac + " serial=" + id.serial + " name=" + model);
+    }
+
+    // 自动重连：只走快路径（旧地址 → ARP 换 IP → 旧端口），不自动扫端口。
+    // 端口也变了就停下，由用户点「找端口」，避免启动时莫名等 30 秒。
     async Task<object> ReconnectLast()
     {
         if (adbExe == null) return Err("没找到 adb");
-        var cand = new List<string>();
-        string last = LoadLastDevice();
-        if (last.Length > 0) cand.Add(last);
-        foreach (var a in WifiBook()) if (!cand.Contains(a)) cand.Add(a);
-        if (cand.Count == 0)
+        await CleanupOffline();
+        var entries = LoadWifiEntries();
+        if (entries.Count == 0)
             return new Dictionary<string, object> { { "ok", false }, { "text", "没有记录上次设备" }, { "addr", "" } };
+        string last = LoadLastDevice();
+        var e = entries.FirstOrDefault(x => string.Equals(x.addr, last, StringComparison.OrdinalIgnoreCase)) ?? entries[0];
 
         var online = await ConnectedWireless();
-        foreach (var addr in cand.Take(5))
+        var hit = online.FirstOrDefault(c => c == e.addr || c.Split(':')[0] == e.addr.Split(':')[0]);
+        if (hit != null)
         {
-            if (online.Any(c => c == addr || c.Split(':')[0] == addr.Split(':')[0]))
+            SaveLastDevice(hit); RememberWifi(hit);
+            await TryRestorePending();
+            return new Dictionary<string, object> { { "ok", true }, { "text", "已经在线" }, { "addr", hit } };
+        }
+
+        var cv = await ConnectVerified(e.addr, 6000);
+        if ((bool)cv["ok"])
+        {
+            await LearnIdentity(e.addr, e.mdnsId, e.name, null);
+            SaveLastDevice(e.addr);
+            await TryRestorePending();
+            return new Dictionary<string, object> { { "ok", true }, { "text", "已连上" }, { "addr", e.addr } };
+        }
+
+        // 换 IP：按 MAC 找新地址，只试旧端口
+        if (!string.IsNullOrEmpty(e.mac))
+        {
+            var lan = GetLanTarget(e.addr.Split(':')[0]);
+            var hosts = await ArpSweep(lan, null);
+            string oldPort = e.addr.Contains(":") ? e.addr.Split(':')[1] : "";
+            // 代理 ARP 会让多个 IP 共用 MAC；有歧义就不自动认领
+            var macHosts = hosts.Where(h => string.Equals(h.mac, e.mac, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (macHosts.Count == 1)
             {
-                SaveLastDevice(addr); RememberWifi(addr);
-                await TryRestorePending();
-                return new Dictionary<string, object> { { "ok", true }, { "text", "已经在线" }, { "addr", addr } };
-            }
-            var r = await Run(adbExe, new[] { "connect", addr }, 7000);
-            bool ok = r.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
-                      || r.text.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0;
-            ok = ok && r.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0;
-            if (ok)
-            {
-                SaveLastDevice(addr); RememberWifi(addr);
-                await TryRestorePending();
-                return new Dictionary<string, object> { { "ok", true }, { "text", r.text.Trim() }, { "addr", addr } };
+                var h = macHosts[0];
+                if (h.ip != e.addr.Split(':')[0] && oldPort.Length > 0)
+                {
+                    string addr = h.ip + ":" + oldPort;
+                    var cv2 = await ConnectVerified(addr, 6000);
+                    if ((bool)cv2["ok"])
+                    {
+                        var id = await ReadDeviceIdentity(addr);
+                        if (!IdentityMatches(e, id))
+                        {
+                            try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+                            Log("重连 ARP 认领被身份校验拒绝 " + addr + " 原 serial=" + e.serial + " 新 serial=" + id.serial);
+                            return new Dictionary<string, object> { { "ok", false }, { "text", "找到了同一网段的设备，但身份对不上；打开无线连接重新找一台" }, { "addr", e.addr } };
+                        }
+                        await LearnIdentity(addr, e.mdnsId, e.name, e.addr);
+                        SaveLastDevice(addr);
+                        await TryRestorePending();
+                        Log("重连：ARP 换 IP 认领 " + e.addr + " → " + addr);
+                        return new Dictionary<string, object> { { "ok", true }, { "text", "换了 IP，已重新连上" }, { "addr", addr } };
+                    }
+                }
             }
         }
-        // 常用地址全连不上：多半是机器还在线、只是无线调试端口换了。
-        // 挑一台 ping 得通的，后台扫端口段自动找回新端口，不占用本次返回时间。
-        foreach (var addr in cand.Take(3))
-        {
-            string ip = addr.Split(':')[0];
-            var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
-            if (pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) < 0) continue;
-            var st = new RelocateState { ip = ip, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在自动找回新端口…" };
-            reloc = st;
-            var _ = RelocateLoop(st);
-            Log("reconnect 失败，自动定位 " + ip + " 的新端口");
-            return new Dictionary<string, object> {
-                { "ok", false }, { "addr", addr }, { "relocating", true },
-                { "text", "端口可能变了，正在局域网里自动找回新端口…" } };
-        }
-        return new Dictionary<string, object> { { "ok", false }, { "text", "常用地址都连不上，重新扫描或手动填一次" }, { "addr", cand[0] } };
+
+        string st = Convert.ToString(cv["state"]);
+        string msg = st == "unauthorized"
+            ? "找到了上次设备，但需要授权：打开无线连接重新配对"
+            : "IP 或端口可能变了：打开无线连接，点「找端口」";
+        return new Dictionary<string, object> { { "ok", false }, { "text", msg }, { "addr", e.addr } };
     }
 
     string LoadLastDevice()
@@ -1628,46 +2030,251 @@ public class MainForm : Form
         WriteJson(LastDevFile, new Dictionary<string, object> { { "addr", addr ?? "" } });
     }
 
-    // 常用无线地址簿：有些设备不发送发现信号，只能靠这里记下的地址找回
-    List<string> WifiBook()
+    // 常用无线地址簿：地址只是最近一次的位置；MAC/serial 才是设备身份。
+    // 只用于同网段找回，不做云同步。
+    class WifiEntry
     {
-        var outList = new List<string>();
+        public string addr = "", mac = "", serial = "", mdnsId = "", name = "";
+        public DateTime lastSeen;
+    }
+    class DeviceIdentity { public string serial = "", model = "", mac = ""; }
+    static readonly object WifiLock = new object();
+
+    static bool IdEq(string a, string b)
+    {
+        return !string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b) && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+    static bool HasIdentity(WifiEntry e) { return !string.IsNullOrEmpty(e.serial) || !string.IsNullOrEmpty(e.mdnsId); }
+    static bool SameIdentity(WifiEntry a, WifiEntry b)
+    {
+        return IdEq(a.serial, b.serial) || IdEq(a.mdnsId, b.mdnsId) || IdEq(a.serial, b.mdnsId) || IdEq(a.mdnsId, b.serial);
+    }
+    // 条目是否就是这次连接到的设备：serial/mDNS 优先，MAC 只在双方都没有更强身份时才用
+    static bool EntryIdMatches(WifiEntry e, string serial, string mdnsId, string mac)
+    {
+        if (IdEq(e.serial, serial) || IdEq(e.mdnsId, mdnsId) || IdEq(e.serial, mdnsId) || IdEq(e.mdnsId, serial)) return true;
+        if (string.IsNullOrEmpty(e.serial) && string.IsNullOrEmpty(e.mdnsId) && IdEq(e.mac, mac)) return true;
+        return false;
+    }
+    static bool IdentityMatches(WifiEntry e, DeviceIdentity id)
+    {
+        if (!string.IsNullOrEmpty(e.serial) && !string.IsNullOrEmpty(id.serial))
+            return string.Equals(e.serial, id.serial, StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(e.mac) && !string.IsNullOrEmpty(id.mac))
+            return string.Equals(e.mac, id.mac, StringComparison.OrdinalIgnoreCase);
+        return true;   // 没有足够信息区分，按原来的地址处理
+    }
+
+    List<WifiEntry> LoadWifiEntries()
+    {
+        var list = new List<WifiEntry>();
         var raw = ReadJson(WifiBookFile) as System.Collections.IEnumerable;
         if (raw != null)
             foreach (var o in raw)
             {
                 var d = o as Dictionary<string, object>;
-                string a = d != null ? Convert.ToString(d["addr"]) : Convert.ToString(o);
-                if (!string.IsNullOrEmpty(a) && a.Contains(":") && !outList.Contains(a)) outList.Add(a);
+                var e = new WifiEntry();
+                if (d != null)
+                {
+                    e.addr = d.ContainsKey("addr") ? (Convert.ToString(d["addr"]) ?? "") : "";
+                    e.mac = d.ContainsKey("mac") ? (Convert.ToString(d["mac"]) ?? "") : "";
+                    e.serial = d.ContainsKey("serial") ? (Convert.ToString(d["serial"]) ?? "") : "";
+                    e.mdnsId = d.ContainsKey("mdnsId") ? (Convert.ToString(d["mdnsId"]) ?? "") : "";
+                    e.name = d.ContainsKey("name") ? (Convert.ToString(d["name"]) ?? "") : "";
+                    DateTime t;
+                    if (d.ContainsKey("lastSeen") && DateTime.TryParse(Convert.ToString(d["lastSeen"]), out t)) e.lastSeen = t;
+                }
+                else e.addr = Convert.ToString(o) ?? "";
+                if (!string.IsNullOrEmpty(e.addr) && e.addr.Contains(":")) list.Add(e);
             }
         // 早期版本只存一个地址，这里一并认账
         var legacy = ReadJson(LegacyWifiFile) as Dictionary<string, object>;
         if (legacy != null)
         {
-            string ip = Convert.ToString(legacy["ip"]) ?? "", port = Convert.ToString(legacy["port"]) ?? "";
+            string ip = legacy.ContainsKey("ip") ? (Convert.ToString(legacy["ip"]) ?? "") : "";
+            string port = legacy.ContainsKey("port") ? (Convert.ToString(legacy["port"]) ?? "") : "";
             if (ip.Length > 0)
             {
-                string a = port.Length > 0 ? ip + ":" + port : ip;
-                if (!outList.Contains(a)) outList.Add(a);
+                string a = port.Length > 0 ? ip + ":" + port : ip + ":5555";
+                if (!list.Any(e => e.addr == a)) list.Add(new WifiEntry { addr = a });
             }
         }
         var last = LoadLastDevice();
-        if (last.Length > 0 && last.Contains(":") && !outList.Contains(last)) outList.Insert(0, last);
-        // 同一台设备的端口会变，只留最近的那一条，否则列表里会堆一串连不上的旧端口
-        var seenIps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var dedup = new List<string>();
-        foreach (var a in outList) { if (!a.Contains(":")) continue; if (seenIps.Add(a.Split(':')[0])) dedup.Add(a); }
+        if (last.Length > 0 && last.Contains(":") && !list.Any(e => e.addr == last))
+            list.Insert(0, new WifiEntry { addr = last });
+        // 同一 IP 下只有身份兼容才合并；身份冲突时整条保留较新的，绝不混合字段
+        var byIp = new Dictionary<string, WifiEntry>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<WifiEntry>();
+        foreach (var e in list)
+        {
+            string ip = e.addr.Split(':')[0];
+            WifiEntry cur;
+            if (!byIp.TryGetValue(ip, out cur)) { byIp[ip] = e; order.Add(e); continue; }
+            bool curHas = HasIdentity(cur), eHas = HasIdentity(e);
+            if (!curHas && eHas)
+            {
+                // 空壳记录让位给有身份的记录：整组身份一起换，不能只补一半
+                cur.serial = e.serial; cur.mdnsId = e.mdnsId; cur.mac = e.mac;
+                if (string.IsNullOrEmpty(cur.name)) cur.name = e.name;
+                if (e.lastSeen > cur.lastSeen) cur.lastSeen = e.lastSeen;
+            }
+            else if (curHas && !eHas)
+            {
+                if (string.IsNullOrEmpty(cur.mac)) cur.mac = e.mac;
+                if (string.IsNullOrEmpty(cur.name)) cur.name = e.name;
+                if (e.lastSeen > cur.lastSeen) cur.lastSeen = e.lastSeen;
+            }
+            else if (!curHas && !eHas)
+            {
+                if (string.IsNullOrEmpty(cur.name)) cur.name = e.name;
+                if (e.lastSeen > cur.lastSeen) cur.lastSeen = e.lastSeen;
+            }
+            else if (SameIdentity(cur, e))
+            {
+                if (e.lastSeen >= cur.lastSeen)
+                {
+                    if (!string.IsNullOrEmpty(e.mac)) cur.mac = e.mac;
+                    if (!string.IsNullOrEmpty(e.name)) cur.name = e.name;
+                    cur.lastSeen = e.lastSeen;
+                }
+                else if (string.IsNullOrEmpty(cur.mac)) cur.mac = e.mac;
+            }
+            else if (e.lastSeen > cur.lastSeen)
+            {
+                // 同一 IP 换了一台设备：保留较新记录，旧身份整条丢弃，不复制任何字段
+                int idx = order.IndexOf(cur);
+                if (idx >= 0) order[idx] = e;
+                byIp[ip] = e;
+                Log("地址簿同一 IP 身份冲突，保留较新记录 " + ip + "（旧 " + cur.serial + " / 新 " + e.serial + "）");
+            }
+        }
+
+        // 跨 IP 按 serial/mdnsId 去重：同一台设备只留较新地址
+        var dedup = new List<WifiEntry>();
+        var idIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in order)
+        {
+            var keys = new List<string>();
+            if (!string.IsNullOrEmpty(e.serial)) keys.Add("s:" + e.serial);
+            if (!string.IsNullOrEmpty(e.mdnsId)) keys.Add("m:" + e.mdnsId);
+            int idx = -1;
+            foreach (var k in keys)
+            {
+                int at;
+                if (idIndex.TryGetValue(k, out at)) { idx = at; break; }
+            }
+            if (idx >= 0)
+            {
+                var cur = dedup[idx];
+                if (e.lastSeen > cur.lastSeen || (e.addr == last && cur.addr != last))
+                    dedup[idx] = e;
+                foreach (var k in keys) idIndex[k] = idx;
+                continue;
+            }
+            int pos = dedup.Count;
+            dedup.Add(e);
+            foreach (var k in keys) idIndex[k] = pos;
+        }
         return dedup.Take(8).ToList();
     }
 
+    void SaveWifiEntries(List<WifiEntry> list)
+    {
+        var arr = new List<object>();
+        foreach (var e in list.Take(8))
+        {
+            if (string.IsNullOrEmpty(e.addr) || !e.addr.Contains(":")) continue;
+            var d = new Dictionary<string, object> { { "addr", e.addr } };
+            if (!string.IsNullOrEmpty(e.mac)) d["mac"] = e.mac;
+            if (!string.IsNullOrEmpty(e.serial)) d["serial"] = e.serial;
+            if (!string.IsNullOrEmpty(e.mdnsId)) d["mdnsId"] = e.mdnsId;
+            if (!string.IsNullOrEmpty(e.name)) d["name"] = e.name;
+            if (e.lastSeen != default(DateTime)) d["lastSeen"] = e.lastSeen.ToString("s");
+            arr.Add(d);
+        }
+        WriteJson(WifiBookFile, arr);
+    }
+
+    // 常用无线地址簿：有些设备不发送发现信号，只能靠这里记下的地址找回
+    List<string> WifiBook()
+    {
+        return LoadWifiEntries()
+            .Select(e => e.addr)
+            .Where(a => !string.IsNullOrEmpty(a) && a.Contains(":"))
+            .Distinct()
+            .Take(8)
+            .ToList();
+    }
+
+    // 兼容旧调用：只记地址；学到身份时用下面的完整版本
     void RememberWifi(string addr)
     {
+        RememberWifi(addr, "", "", "", "", null);
+    }
+
+    void RememberWifi(string addr, string mac, string serial, string mdnsId, string name, string oldAddr = null)
+    {
         if (string.IsNullOrEmpty(addr) || !addr.Contains(":")) return;
-        var list = WifiBook();
-        string ip = addr.Split(':')[0];
-        list.RemoveAll(a => a.Split(':')[0] == ip);   // 同 IP 的旧端口直接顶掉
-        list.Insert(0, addr);
-        WriteJson(WifiBookFile, list.Take(8).Select(a => new Dictionary<string, object> { { "addr", a } }).ToList());
+        lock (WifiLock)
+        {
+            var list = LoadWifiEntries();
+            WifiEntry hit = null;
+            if (!string.IsNullOrEmpty(serial))
+                hit = list.FirstOrDefault(e => IdEq(e.serial, serial) || IdEq(e.mdnsId, serial));
+            if (hit == null && !string.IsNullOrEmpty(mdnsId))
+                hit = list.FirstOrDefault(e => IdEq(e.mdnsId, mdnsId) || IdEq(e.serial, mdnsId));
+            if (hit == null)
+            {
+                var atAddr = list.FirstOrDefault(e => e.addr == addr);
+                if (atAddr != null)
+                {
+                    if (!HasIdentity(atAddr) || EntryIdMatches(atAddr, serial, mdnsId, mac))
+                        hit = atAddr;
+                    else
+                    {
+                        // 这个 IP 已经属于另一台设备：清空旧身份再承载新设备，避免混合
+                        Log("地址簿替换同 IP 的另一台设备 " + addr + "（旧 serial=" + atAddr.serial + "）");
+                        atAddr.serial = ""; atAddr.mdnsId = ""; atAddr.mac = ""; atAddr.name = "";
+                        hit = atAddr;
+                    }
+                }
+            }
+            if (hit == null) { hit = new WifiEntry(); list.Insert(0, hit); }
+
+            hit.addr = addr;
+            if (!string.IsNullOrEmpty(mac)) hit.mac = mac;
+            if (!string.IsNullOrEmpty(serial)) hit.serial = serial;
+            if (!string.IsNullOrEmpty(mdnsId)) hit.mdnsId = mdnsId;
+            if (!string.IsNullOrEmpty(name)) hit.name = name;
+            hit.lastSeen = DateTime.Now;
+
+            // 新地址如果已被另一台设备占用，替换那条记录，但不继承它的身份
+            var otherAtAddr = list.FirstOrDefault(e => e != hit && e.addr == addr);
+            if (otherAtAddr != null && HasIdentity(otherAtAddr) && !EntryIdMatches(otherAtAddr, serial, mdnsId, mac))
+            {
+                Log("地址簿清理新地址上的旧设备 " + addr + "（旧 serial=" + otherAtAddr.serial + "）");
+                list.Remove(otherAtAddr);
+            }
+            // 同一身份、同地址空壳、换 IP 前的同一身份记录都只留这一条。
+            // 旧地址若已属于别的设备，绝不动它。
+            list.RemoveAll(e => e != hit && (
+                EntryIdMatches(e, serial, mdnsId, mac) ||
+                (e.addr == addr && !HasIdentity(e)) ||
+                (!string.IsNullOrEmpty(oldAddr) && e.addr == oldAddr &&
+                 (!HasIdentity(e) || EntryIdMatches(e, serial, mdnsId, mac)))));
+            list.Remove(hit);
+            list.Insert(0, hit);
+            SaveWifiEntries(list);
+        }
+    }
+
+    void RemoveWifiEntry(string addr)
+    {
+        lock (WifiLock)
+        {
+            var list = LoadWifiEntries();
+            if (list.RemoveAll(e => e.addr == addr) > 0) SaveWifiEntries(list);
+        }
     }
 
     // ── 连接诊断 ──
@@ -1804,12 +2411,10 @@ public class MainForm : Form
         {
             string addr = ip + ":" + port;
             tried.Add(addr);
-            var c = await Run(adbExe, new[] { "connect", addr }, 5000);
-            string t = (c.text ?? "").Trim();
-            if (t.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
-                || t.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0)
+            var cv = await ConnectVerified(addr, 5000);
+            if ((bool)cv["ok"])
             {
-                RememberWifi(addr);
+                await LearnIdentity(addr, id, "");
                 SaveLastDevice(addr);
                 Log("转无线成功 " + id + " → " + addr + "（试了 " + tried.Count + " 个端口）");
                 return new Dictionary<string, object> {
@@ -1823,23 +2428,28 @@ public class MainForm : Form
             { "tried", tried.Count }, { "ports", tried } };
     }
 
-    // ── 端口重新定位：mDNS 不可用（公司/访客 WiFi 常拦组播）时，靠 TCP 扫端口找回 adbd ──
-    // Android「无线调试」的连接端口每次开关都换一个随机高位端口（落在 Linux 临时端口段 32768-60999）。
-    // 广播收不到时，直接对这个段并行试连就能把新端口找出来；整个过程后台跑，前端轮询进度，避免卡住 40s 调用超时。
+    // ── 无线查找任务：单台找回 / 全网段深扫，共用进度和取消 ──
+    // Android 无线调试端口是随机高位端口；广播不可用时只能靠 TCP 扫，但必须验证 adb 状态，
+    // 否则 OPPO 这类专有服务也会被当成"连上了"。
     const int RelocBandStart = 32768;
-    const int RelocBandEnd = 60999;
-    const int RelocConcurrency = 1200;
-    const int RelocProbeTimeoutMs = 1500;
+    const int RelocBandEnd = 65535;
+    const int RelocConcurrency = 1000;
+    const int RelocProbeTimeoutMs = 1000;
 
     class RelocateState
     {
-        public string ip = "";
-        public bool running;
+        public volatile string kind = "recover";   // recover | deep
+        public volatile string ip = "";
+        public volatile string targetName = "";
+        public volatile bool running;
+        public volatile bool cancel;
         public int scanned;
         public int total;
-        public string result = "";   // "" | found | none
-        public string addr = "";
-        public string note = "";
+        public int hostsTotal;
+        public volatile string result = "";   // "" | found | none
+        public volatile string addr = "";
+        public volatile string note = "";
+        public List<object> found = new List<object>();
     }
     RelocateState reloc;
 
@@ -1872,90 +2482,329 @@ public class MainForm : Form
         });
     }
 
-    static async Task<List<int>> SweepBand(string ip, int start, int end, int concurrency, int timeoutMs, RelocateState st)
+    // 固定 worker 数从游标取任务：可取消、不会一次排几万个 Task。
+    // 返回找到的开放端口地址（ip:port），跨主机不会混淆。
+    static async Task<List<string>> SweepHosts(List<string> ips, int start, int end, int concurrency, int timeoutMs, RelocateState st)
     {
-        var open = new List<int>();
-        var sync = new object();
-        var sem = new SemaphoreSlim(concurrency);
-        var pending = new List<Task>();
-        IPAddress addr;
-        if (!IPAddress.TryParse(ip, out addr)) return open;
-        for (int port = start; port <= end; port++)
+        var open = new List<string>();
+        var addrs = new List<IPAddress>();
+        var names = new List<string>();
+        foreach (var ip in ips ?? new List<string>())
         {
-            int p = port;
-            await sem.WaitAsync();
-            var t = ConnectProbe(addr, p, timeoutMs).ContinueWith(tk =>
-            {
-                bool ok = false;
-                try { ok = tk.Result; } catch { ok = false; }
-                if (ok) lock (sync) open.Add(p);
-                if (st != null) Interlocked.Increment(ref st.scanned);
-                sem.Release();
-            });
-            pending.Add(t);
+            IPAddress a;
+            if (!IPAddress.TryParse(ip, out a)) continue;
+            addrs.Add(a); names.Add(ip);
         }
-        await Task.WhenAll(pending);
+        if (addrs.Count == 0) return open;
+        int portCount = end - start + 1;
+        int total = addrs.Count * portCount;
+        st.total = total;
+        st.scanned = 0;
+        st.hostsTotal = addrs.Count;
+        int cursor = -1;
+        var workers = new List<Task>();
+        for (int w = 0; w < concurrency; w++)
+        {
+            workers.Add(Task.Run(async () =>
+            {
+                while (true)
+                {
+                    if (st.cancel) return;
+                    int idx = Interlocked.Increment(ref cursor);
+                    if (idx >= total) return;
+                    int hostIdx = idx / portCount;
+                    int port = start + (idx % portCount);
+                    bool ok = await ConnectProbe(addrs[hostIdx], port, timeoutMs);
+                    if (ok) lock (open) open.Add(names[hostIdx] + ":" + port);
+                    Interlocked.Increment(ref st.scanned);
+                }
+            }));
+        }
+        await Task.WhenAll(workers);
         return open;
     }
 
-    async Task<object> RelocateStart(Dictionary<string, object> p)
+    bool RelocBusy(out RelocateState cur)
     {
-        if (adbExe == null) return Err("没找到 adb");
-        string ip = Ps(p, "ip").Trim();
-        if (ip.Length == 0) return Err("缺少要定位的手机 IP");
-        if (reloc != null && reloc.running && reloc.ip == ip)
-            return new Dictionary<string, object> { { "ok", true }, { "started", true }, { "text", "正在定位中" } };
-
-        var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
-        if (pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) < 0)
-            return Err("手机 " + ip + " 现在 ping 不通：确认它连着和电脑同一个 WiFi、且没锁屏，再试一次");
-
-        var st = new RelocateState { ip = ip, running = true, total = RelocBandEnd - RelocBandStart + 1, note = "正在扫描端口…" };
-        reloc = st;
-        Log("relocate 开始扫描 " + ip + " 端口段 " + RelocBandStart + "-" + RelocBandEnd);
-        var _ = RelocateLoop(st);   // 后台跑，前端轮询 wifi-relocate-poll
-        return new Dictionary<string, object> { { "ok", true }, { "started", true } };
+        cur = reloc;
+        return cur != null && cur.running;
     }
 
-    async Task RelocateLoop(RelocateState st)
+    Task<object> RelocateStart(Dictionary<string, object> p)
+    {
+        if (adbExe == null) return Task.FromResult<object>(Err("没找到 adb"));
+        string addr = Ps(p, "addr").Trim();
+        string ip = Ps(p, "ip").Trim();
+        if (ip.Length == 0 && addr.Contains(":")) ip = addr.Split(':')[0];
+        if (ip.Length == 0) return Task.FromResult<object>(Err("缺少要找回的手机 IP"));
+        RelocateState cur;
+        if (RelocBusy(out cur))
+        {
+            if (cur.ip == ip)
+                return Task.FromResult<object>(new Dictionary<string, object> { { "ok", true }, { "started", true }, { "text", "正在找端口中" } });
+            return Task.FromResult<object>(new Dictionary<string, object> {
+                { "ok", false }, { "busy", true }, { "ip", cur.ip },
+                { "error", "正在为 " + (cur.targetName.Length > 0 ? cur.targetName : cur.ip) + " 查找，等这次结束再试另一台。" } });
+        }
+
+        var entries = LoadWifiEntries();
+        var entry = entries.FirstOrDefault(e => e.addr == addr) ?? entries.FirstOrDefault(e => e.addr.Split(':')[0] == ip);
+        if (entry == null) entry = new WifiEntry { addr = addr.Contains(":") ? addr : ip + ":0" };
+        string name = entry.name.Length > 0 ? entry.name : ip;
+        var st = new RelocateState { kind = "recover", ip = ip, targetName = name, running = true, note = "正在定位设备…" };
+        reloc = st;
+        var _ = RecoverLoop(st, entry);
+        Log("recover 开始 " + (addr.Length > 0 ? addr : ip));
+        return Task.FromResult<object>(new Dictionary<string, object> { { "ok", true }, { "started", true } });
+    }
+
+    Task<object> DeepScanStart(Dictionary<string, object> p)
+    {
+        if (adbExe == null) return Task.FromResult<object>(Err("没找到 adb"));
+        RelocateState cur;
+        if (RelocBusy(out cur))
+            return Task.FromResult<object>(new Dictionary<string, object> {
+                { "ok", false }, { "busy", true }, { "ip", cur.ip },
+                { "error", "正在为 " + (cur.targetName.Length > 0 ? cur.targetName : cur.ip) + " 查找，等这次结束再试。" } });
+        var st = new RelocateState { kind = "deep", running = true, note = "正在列出在线设备…" };
+        reloc = st;
+        var _ = DeepScanLoop(st);
+        Log("deep 开始扫描本网段");
+        return Task.FromResult<object>(new Dictionary<string, object> { { "ok", true }, { "started", true } });
+    }
+
+    object CancelWifiJob()
+    {
+        var st = reloc;
+        if (st == null || !st.running) return new Dictionary<string, object> { { "ok", false }, { "text", "没有正在进行的查找" } };
+        st.cancel = true;
+        st.note = "正在停止…";
+        return new Dictionary<string, object> { { "ok", true }, { "text", "已请求停止" } };
+    }
+
+    async Task<bool> PingIp(string ip)
+    {
+        var pg = await Run("ping", new[] { "-n", "1", "-w", "700", ip }, 5000);
+        return pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    // 广播会间歇断档：点「找端口」时先廉价重查，命中就不用扫端口段
+    async Task<string> FindMdnsAddr(string ip, int rounds)
+    {
+        for (int i = 0; i < rounds; i++)
+        {
+            var r = await Run(adbExe, new[] { "mdns", "services" }, 3000);
+            foreach (var line in (r.text ?? "").Split('\n'))
+            {
+                string l = line.Trim();
+                if (l.Length == 0 || l.StartsWith("List of")) continue;
+                if (l.IndexOf("_adb-tls-connect", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                foreach (var x in l.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!x.StartsWith(ip + ":", StringComparison.OrdinalIgnoreCase)) continue;
+                    string port = x.Substring(ip.Length + 1);
+                    if (port.Length > 0 && port.All(char.IsDigit)) return x;
+                }
+            }
+            if (i + 1 < rounds) await Task.Delay(500);
+        }
+        return null;
+    }
+
+    async Task FinishRecover(RelocateState st, WifiEntry entry, string addr)
+    {
+        var id = await ReadDeviceIdentity(addr);
+        if (!IdentityMatches(entry, id))
+        {
+            st.result = "none";
+            st.note = "这个地址现在连到的是另一台设备（" + (id.model.Length > 0 ? id.model : addr) + "），没有覆盖地址簿。";
+            try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+            Log("recover 身份不符，拒绝写入 " + addr + " 原 serial=" + entry.serial + " 新 serial=" + id.serial);
+            return;
+        }
+        await LearnIdentity(addr, entry.mdnsId, entry.name, entry.addr);
+        if (LoadLastDevice() == entry.addr) SaveLastDevice(addr);
+        st.addr = addr;
+        st.result = "found";
+        st.note = "已找回并连上：" + addr;
+        Log("recover 命中 " + addr + "（原 " + entry.addr + "）");
+    }
+
+    async Task RecoverLoop(RelocateState st, WifiEntry entry)
     {
         try
         {
-            var open = await SweepBand(st.ip, RelocBandStart, RelocBandEnd, RelocConcurrency, RelocProbeTimeoutMs, st);
+            string oldIp = entry.addr.Split(':')[0];
+            var lan = GetLanTarget(oldIp);
+
+            // 只按设备身份定位：有 MAC 就按 MAC，没有才用旧 IP（且 MAC 要对得上）
+            var candidates = new List<string>();
+            if (lan != null && !string.IsNullOrEmpty(entry.mac))
+            {
+                st.note = "正在查找这台设备的新 IP…";
+                var hosts = await ArpSweep(lan, st);
+                foreach (var h in hosts.Where(h => string.Equals(h.mac, entry.mac, StringComparison.OrdinalIgnoreCase)))
+                    if (!candidates.Contains(h.ip)) candidates.Add(h.ip);
+            }
+            if (candidates.Count == 0)
+            {
+                if (await PingIp(oldIp))
+                {
+                    string mac = GetMac(oldIp);
+                    if (entry.mac.Length == 0 || string.Equals(mac, entry.mac, StringComparison.OrdinalIgnoreCase))
+                        candidates.Add(oldIp);
+                }
+            }
+            if (candidates.Count == 0)
+            {
+                st.result = "none";
+                st.note = "这台设备已经不在原来的 IP 上，局域网里也没找到它的 MAC；请在手机上确认无线调试开着，或点「深度查找」。";
+                return;
+            }
+
+            // 广播里有旧 IP 的新端口：直接试
+            string mdnsAddr = await FindMdnsAddr(oldIp, 1);
+            if (!string.IsNullOrEmpty(mdnsAddr))
+            {
+                st.note = "广播里发现 " + mdnsAddr + "，正在试连…";
+                var cv0 = await ConnectVerified(mdnsAddr, 5000);
+                if ((bool)cv0["ok"]) { await FinishRecover(st, entry, mdnsAddr); return; }
+            }
+
+            // 先试旧端口和 5555，不扫端口段
+            string oldPort = entry.addr.Contains(":") ? entry.addr.Split(':')[1] : "";
+            var quick = new List<int>();
+            int op;
+            if (int.TryParse(oldPort, out op) && op > 0 && op <= 65535) quick.Add(op);
+            if (!quick.Contains(5555)) quick.Add(5555);
+            foreach (var ip in candidates)
+            {
+                foreach (int port in quick)
+                {
+                    if (st.cancel) { st.result = "none"; st.note = "已停止查找。"; return; }
+                    string addr = ip + ":" + port;
+                    st.note = "试连 " + addr + "…";
+                    var cv = await ConnectVerified(addr, 5000);
+                    if ((bool)cv["ok"]) { await FinishRecover(st, entry, addr); return; }
+                    if ("unauthorized".Equals(Convert.ToString(cv["state"])))
+                    {
+                        st.result = "none";
+                        st.note = "找到了设备，但需要授权：在手机无线调试页重新配对。";
+                        return;
+                    }
+                }
+            }
+
+            st.note = "旧端口不通，开始扫描这台设备的端口…";
+            var open = await SweepHosts(candidates, RelocBandStart, RelocBandEnd, RelocConcurrency, RelocProbeTimeoutMs, st);
+            if (st.cancel) { st.result = "none"; st.note = "已停止查找。"; return; }
             if (open.Count == 0)
             {
                 st.result = "none";
-                st.note = "扫遍端口段没找到任何开放端口：手机上的「无线调试」多半已经关了。去开发者选项里重新打开它，再点一次定位。";
-                Log("relocate " + st.ip + " 无开放端口");
+                st.note = "没找到这台设备的无线调试端口：确认「无线调试」开着、手机和电脑在同一网络。";
                 return;
             }
-            foreach (int port in open.OrderByDescending(x => x))
+            foreach (var addr in open.OrderByDescending(a => int.Parse(a.Split(':')[1])))
             {
-                string addr = st.ip + ":" + port;
-                st.note = "发现 " + open.Count + " 个开放端口，正在试连 " + addr + "…";
-                var c = await Run(adbExe, new[] { "connect", addr }, 6000);
-                string t = (c.text ?? "").Trim();
-                bool hit = t.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
-                           || t.IndexOf("already connected", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (hit)
+                if (st.cancel) { st.result = "none"; st.note = "已停止查找。"; return; }
+                st.note = "发现开放端口，正在验证 " + addr + "…";
+                var cv = await ConnectVerified(addr, 6000);
+                if ((bool)cv["ok"]) { await FinishRecover(st, entry, addr); return; }
+                if ("unauthorized".Equals(Convert.ToString(cv["state"])))
                 {
-                    foreach (int o in open)
-                        if (o != port) { try { await Run(adbExe, new[] { "disconnect", st.ip + ":" + o }, 3000); } catch { } }
-                    RememberWifi(addr);
-                    SaveLastDevice(addr);
-                    st.addr = addr;
-                    st.result = "found";
-                    st.note = "已找回新端口并连上：" + addr;
-                    Log("relocate 命中 " + addr + "（开放端口 " + open.Count + " 个）");
+                    st.result = "none";
+                    st.note = "找到了设备，但需要授权：在手机无线调试页重新配对。";
                     return;
                 }
-                try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
             }
             st.result = "none";
-            st.note = "找到 " + open.Count + " 个开放端口，但都不是 adbd：可能这台 IP 不是手机，或无线调试没真正开启。";
-            Log("relocate " + st.ip + " 开放 " + open.Count + " 端口但无 adbd");
+            st.note = "找到开放端口，但都不是无线调试：端口可能没开，或这台 IP 不是手机。";
         }
-        catch (Exception e) { st.result = "none"; st.note = "定位出错：" + e.Message; }
+        catch (Exception e) { st.result = "none"; st.note = "查找出错：" + e.Message; }
+        finally { st.running = false; }
+    }
+
+    async Task DeepScanLoop(RelocateState st)
+    {
+        try
+        {
+            var lan = GetLanTarget(null);
+            if (lan == null)
+            {
+                st.result = "none";
+                st.note = "没找到本机局域网地址：确认电脑连着 WiFi 或网线。";
+                return;
+            }
+            st.note = "正在扫描本网段的在线设备…";
+            var hosts = await ArpSweep(lan, st);
+            var ips = hosts.Where(h => !h.gateway).Select(h => h.ip).ToList();
+            if (ips.Count == 0)
+            {
+                st.result = "none";
+                st.note = "本网段没找到在线设备：确认手机和电脑在同一个网络。";
+                return;
+            }
+            st.note = "正在扫描 " + ips.Count + " 台在线设备的端口…";
+            var open = await SweepHosts(ips, RelocBandStart, RelocBandEnd, RelocConcurrency, RelocProbeTimeoutMs, st);
+            if (st.cancel) { st.result = "none"; st.note = "已停止查找。"; return; }
+            if (open.Count == 0)
+            {
+                st.result = "none";
+                st.note = "没找到无线调试端口：确认手机的「无线调试」开着，并且和电脑在同一网络。";
+                return;
+            }
+
+            var entries = LoadWifiEntries();
+            var savedIps = new HashSet<string>(entries.Select(e => e.addr.Split(':')[0]), StringComparer.OrdinalIgnoreCase);
+            var found = new List<object>();
+            var ordered = open
+                .OrderByDescending(a => savedIps.Contains(a.Split(':')[0]))
+                .ThenByDescending(a => { int p; int.TryParse(a.Split(':')[1], out p); return p; })
+                .Take(16).ToList();
+            foreach (var addr in ordered)
+            {
+                if (st.cancel) break;
+                st.note = "正在验证 " + addr + "…";
+                var cv = await ConnectVerified(addr, 6000);
+                if ((bool)cv["ok"])
+                {
+                    string ip = addr.Split(':')[0];
+                    var entry = entries.FirstOrDefault(e => e.addr.Split(':')[0] == ip);
+                    var id = await ReadDeviceIdentity(addr);
+                    bool same = entry == null || IdentityMatches(entry, id);
+                    if (same)
+                    {
+                        await LearnIdentity(addr, entry != null ? entry.mdnsId : "", entry != null ? entry.name : "");
+                        if (entry != null && LoadLastDevice() == entry.addr) SaveLastDevice(addr);
+                    }
+                    else
+                    {
+                        Log("deep 命中的设备与地址簿身份不符，不覆盖 " + addr + " 原 serial=" + entry.serial + " 新 serial=" + id.serial);
+                    }
+                    found.Add(new Dictionary<string, object> {
+                        { "addr", addr }, { "name", same ? (entry != null ? entry.name : "") : id.model } });
+                    st.addr = addr;
+                    st.result = "found";
+                    st.note = same ? ("已找到并连上 " + addr) : ("已找到并连上 " + addr + "；地址簿原来的记录不是这台，未覆盖");
+                    break;
+                }
+                if ("unauthorized".Equals(Convert.ToString(cv["state"])))
+                {
+                    found.Add(new Dictionary<string, object> { { "addr", addr }, { "unauthorized", true } });
+                    st.addr = addr;
+                    st.result = "found";
+                    st.note = "找到无线调试 " + addr + "，但需要授权：在手机上点允许或重新配对。";
+                    break;
+                }
+            }
+            st.found = found;
+            if (found.Count == 0)
+            {
+                st.result = "none";
+                st.note = "找到开放端口，但都不是无线调试：确认手机的「无线调试」开着。";
+            }
+        }
+        catch (Exception e) { st.result = "none"; st.note = "深度查找出错：" + e.Message; }
         finally { st.running = false; }
     }
 
@@ -1963,21 +2812,27 @@ public class MainForm : Form
     {
         var st = reloc;
         if (st == null) return new Dictionary<string, object> { { "ok", false }, { "phase", "idle" } };
-        string phase = st.running ? "running" : (st.result.Length > 0 ? st.result : "idle");
+        // 先读 result：扫描线程是「先写结果、最后置 running=false」，反过来会多显示一帧 running
+        string res = st.result;
+        string phase = res.Length > 0 ? res : (st.running ? "running" : "idle");
         return new Dictionary<string, object> {
-            { "ok", true }, { "phase", phase }, { "ip", st.ip },
-            { "scanned", st.scanned }, { "total", st.total },
-            { "result", st.result }, { "addr", st.addr }, { "note", st.note } };
+            { "ok", true }, { "phase", phase }, { "kind", st.kind },
+            { "ip", st.ip }, { "targetName", st.targetName },
+            { "scanned", st.scanned }, { "total", st.total }, { "hostsTotal", st.hostsTotal },
+            { "result", res }, { "addr", st.addr }, { "note", st.note }, { "found", st.found } };
     }
 
     object WifiForget(Dictionary<string, object> p)
     {
         string addr = Ps(p, "addr").Trim();
-        var list = WifiBook();
-        bool hit = list.Remove(addr);
-        WriteJson(WifiBookFile, list.Select(a => new Dictionary<string, object> { { "addr", a } }).ToList());
-        if (hit && LoadLastDevice() == addr) SaveLastDevice("");
-        return new Dictionary<string, object> { { "ok", hit }, { "text", hit ? "已忘记 " + addr : "常用地址里没有这条" } };
+        lock (WifiLock)
+        {
+            var list = LoadWifiEntries();
+            bool hit = list.RemoveAll(e => e.addr == addr) > 0;
+            if (hit) SaveWifiEntries(list);
+            if (hit && LoadLastDevice() == addr) SaveLastDevice("");
+            return new Dictionary<string, object> { { "ok", hit }, { "text", hit ? "已忘记 " + addr : "常用地址里没有这条" } };
+        }
     }
 
     async Task<object> WifiDisconnect(Dictionary<string, object> p)
@@ -2023,8 +2878,7 @@ public class MainForm : Form
         string target = addr;
         if (code.Length > 0)
         {
-            var disc = await WifiDiscover() as List<object>;
-            if (disc != null)
+            var disc = await DiscoverDevices();
             {
                 var conn = disc.Select(o => o as Dictionary<string, object>)
                                .FirstOrDefault(o => o != null
@@ -2049,12 +2903,12 @@ public class MainForm : Form
                 return new Dictionary<string, object> { { "ok", false }, { "text", "已达连接上限（" + AdbMaxDevices + " 台），先断开一台设备再连。" } };
         }
 
-        var cr = await Run(adbExe, new[] { "connect", target }, 20000);
+        var cr = await Run(adbExe, new[] { "connect", target }, 15000);
         bool ok = cr.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
                   && cr.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0;
         if (!ok && target != addr)
         {
-            var back = await Run(adbExe, new[] { "connect", addr }, 15000);
+            var back = await Run(adbExe, new[] { "connect", addr }, 12000);
             if (back.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
                 && back.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0)
             { ok = true; target = addr; }
@@ -2063,30 +2917,41 @@ public class MainForm : Form
         // 现场再发现一次，同 IP 的其它端口直接拿来重试
         if (!ok)
         {
-            var fresh = await WifiDiscover() as List<object>;
-            if (fresh != null)
+            var fresh = await DiscoverDevices();
+            var cand = fresh.Select(o => o as Dictionary<string, object>)
+                            .FirstOrDefault(o => o != null
+                                && Convert.ToString(o["kind"]) == "connect"
+                                && Convert.ToString(o["addr"]).Split(':')[0] == ip
+                                && Convert.ToString(o["addr"]) != target);
+            if (cand != null)
             {
-                var cand = fresh.Select(o => o as Dictionary<string, object>)
-                                .FirstOrDefault(o => o != null
-                                    && Convert.ToString(o["kind"]) == "connect"
-                                    && Convert.ToString(o["addr"]).Split(':')[0] == ip
-                                    && Convert.ToString(o["addr"]) != target);
-                if (cand != null)
+                string na = Convert.ToString(cand["addr"]);
+                var cv = await ConnectVerified(na, 6000);
+                if ((bool)cv["ok"])
                 {
-                    string na = Convert.ToString(cand["addr"]);
-                    var r2 = await Run(adbExe, new[] { "connect", na }, 20000);
-                    if (r2.text.IndexOf("connected to", StringComparison.OrdinalIgnoreCase) >= 0
-                        && r2.text.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0)
-                    {
-                        ok = true; target = na;
-                        steps.Add("端口已变，改连 " + na);
-                    }
+                    ok = true; target = na;
+                    steps.Add("端口已变，改连 " + na);
                 }
+            }
+        }
+        // 最后必须确认真的可用：OPPO 等专有端口也会先报 connected，随后 offline
+        if (ok)
+        {
+            var verify = await ConnectVerified(target, 6000);
+            ok = (bool)verify["ok"];
+            if (!ok)
+            {
+                string st = Convert.ToString(verify["state"]);
+                steps.Add(st == "unauthorized" ? "找到了设备，但需要授权/重新配对" : "这个端口不是可用的无线调试");
             }
         }
         steps.Add(ok ? "已连上 " + target : "连接失败：" + (cr.text.Trim().Length > 0 ? cr.text.Trim() : "没有回应"));
         Log("wifi-connect " + target + " ok=" + ok);
-        if (ok) { SaveLastDevice(target); RememberWifi(target); } // 记住本次连接：下次自动重连、以及靠它找回不发信号的设备
+        if (ok)
+        {
+            SaveLastDevice(target);
+            await LearnIdentity(target, "", "");
+        }
         return new Dictionary<string, object> { { "ok", ok }, { "text", string.Join("\n", steps) } };
     }
 
@@ -2537,3 +3402,4 @@ public class MainForm : Form
         catch (Exception ex) { return Err("保存失败：" + ex.Message); }
     }
 }
+
