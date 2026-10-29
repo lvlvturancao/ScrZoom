@@ -77,13 +77,15 @@
   <header>
     <h1>无线设备扫描流程</h1>
     <div class="sub">水月清影 ScreenZoom · 设计说明 · 2026-10-26</div>
-    <div class="lead">手机 IP 或端口变了，扫描能定位到它；找不回时，明确告诉用户下一步该做什么，而不是一直转圈。</div>
+    <div class="lead">扫描收广播，同时 ping 本网段确认上次连过的设备是否还在线；只列认得的设备，端口另外算。找不回时，明确告诉用户下一步该做什么。</div>
   </header>
 
   <h2>为什么这样设计</h2>
   <div class="card">
     <ul>
-      <li>当前网络收不到设备的 mDNS 广播，靠广播发现不可行。</li>
+      <li>当前网络收不到设备的 mDNS 广播（或断档），光靠广播不可行：除了收广播，还会 ping 本网段确认"上次连过的设备"是否还在线。</li>
+      <li>只列广播到的和地址簿里认得的设备。网段里其它在线主机（电视、电脑、打印机、别的手机）不列出，免得干扰。</li>
+      <li>端口不是"在线"的一部分：认得的主机只探一次旧端口，端口不对就交给用户点「找端口」单独扫这一台。</li>
       <li>部分开放端口不是 adb（例如 OPPO 的 46888）。<code>adb connect</code> 仍会提示 “connected to”，随后设备变 <code>offline</code>；旧逻辑把它当成成功。</li>
       <li>是否连上，不能看 adb 的提示语，只能看设备状态：<b>只有 <code>device</code> 才算成功。</b></li>
       <li>换 IP 本身不会换端口；端口只在无线调试重启、开关或重新配对时变。两者经常一起变，所以旧端口只做一次快速尝试，不当主路径。</li>
@@ -94,15 +96,13 @@
   <div class="card flow">
     <div class="step start"><span class="n">1</span><b>点扫描</b> · 排除已连接设备</div>
     <div class="arrow">↓</div>
-    <div class="step"><span class="n">2</span><b>mDNS 收集</b>（≤ 5 秒）· 收到广播就直接列出</div>
+    <div class="step"><span class="n">2</span><b>两条线并行</b> · mDNS 收广播（有就用它的端口）+ 本网段逐个 ping 探活</div>
     <div class="arrow">↓</div>
-    <div class="step"><span class="n">3</span><b>地址簿逐台探活</b> · ping → 比对 MAC → 连接并验证</div>
+    <div class="step"><span class="n">3</span><b>归属</b> · 广播 → 按 IP 对上地址簿 → 按 MAC 唯一对上（换了 IP）→ 其余主机不列出</div>
     <div class="arrow">↓</div>
-    <div class="step bad"><span class="n">4</span><b>没连上</b> · ARP 扫本网段，按 MAC 找新 IP</div>
+    <div class="step"><span class="n">4</span><b>认得的设备</b> · 只探一次旧端口：通 = 端口可用；不通 = 端口变了</div>
     <div class="arrow">↓</div>
-    <div class="step"><span class="n">5</span><b>新 IP + 旧端口</b> · 只试一次，不自动扫端口</div>
-    <div class="arrow">↓</div>
-    <div class="step choice"><span class="n">6</span><b>仍失败</b> · 标记原因：IP 变了 / 端口变了 / 不在线 / 没有无线调试</div>
+    <div class="step choice"><span class="n">5</span><b>没回应 / 地址被占用</b> · 落到「上次用过的设备」，写清原因</div>
     <div class="arrow">↓</div>
     <div class="split">
       <div class="col">
@@ -113,11 +113,10 @@
         <div class="step good">验证通过 → 连上</div>
       </div>
       <div class="col">
-        <h3>用户点「深度查找」</h3>
-        <div class="step">ARP 列出在线主机</div>
-        <div class="step">扫全网段端口（可停止）</div>
-        <div class="step">逐个连接并验证</div>
-        <div class="step good">找到 adbd → 连上</div>
+        <h3>用户点「找回这台」</h3>
+        <div class="step">按 MAC 在网段里找新 IP</div>
+        <div class="step">试旧端口和 5555，再扫端口段</div>
+        <div class="step good">身份对得上才覆盖地址簿</div>
       </div>
     </div>
   </div>
@@ -126,32 +125,25 @@
     <code>device</code> = 成功；<code>unauthorized</code> = 找到但需授权；持续 <code>offline</code> = 立即断开并判失败。
   </div>
 
-  <h2>三条路径</h2>
+  <h2>两条路径</h2>
   <table>
     <tr><th>路径</th><th>何时用</th><th>做什么</th><th>耗时</th><th>停止</th></tr>
     <tr>
       <td><b>普通扫描</b></td>
       <td>每次点扫描 / 切到无线页</td>
-      <td>广播 + 地址簿探活 + ARP 找新 IP + 试旧端口</td>
+      <td>本网段 ping 探活 + mDNS 广播 + 地址簿归属 + 认得的主机探一次旧端口</td>
       <td>5–10 秒</td>
       <td>不需要</td>
     </tr>
     <tr>
-      <td><b>找端口</b></td>
-      <td>找到新 IP，但旧端口不通</td>
-      <td>定位当前 IP，失败只扫这一台</td>
+      <td><b>找端口 / 找回这台</b></td>
+      <td>在线但端口不通；或设备掉线、地址被占用</td>
+      <td>定位当前 IP（必要时按 MAC 找新 IP），失败只扫这一台</td>
       <td>30–40 秒</td>
       <td>可停止</td>
     </tr>
-    <tr>
-      <td><b>深度查找</b></td>
-      <td>不知道设备在哪 / 没有身份信息</td>
-      <td>ARP 在线主机，扫全网段端口，逐个验证</td>
-      <td>1–2 分钟</td>
-      <td>可停止</td>
-    </tr>
   </table>
-  <p class="small muted" style="margin-top:10px">普通扫描绝不自动进入端口扫描；启动自动重连失败也停下，等用户点「找端口」。</p>
+  <p class="small muted" style="margin-top:10px">普通扫描绝不自动扫端口段，也不会自动连接；启动自动重连失败也停下，等用户点「找端口」。</p>
 
   <h2>设备身份</h2>
   <p>身份优先级：<b>serial</b> → <b>mDNS 实例名</b> → <b>MAC</b>（仅本网段）→ 旧地址。MAC 可能随机化，也可能因代理 ARP 重复，只当同网段线索，不单独合并设备。</p>
@@ -164,22 +156,24 @@
   <h2>界面状态</h2>
   <table>
     <tr><th>状态</th><th>卡片文案</th><th>动作</th></tr>
-    <tr><td>已找到</td><td>正常设备卡片</td><td>连接</td></tr>
-    <tr><td>IP 变了，旧端口能连</td><td>和上次的 IP 不一样，已重新连上</td><td>连接</td></tr>
-    <tr><td>找到新 IP，旧端口不通</td><td>已找到新 IP，端口可能也变了</td><td>找端口</td></tr>
-    <tr><td>端口变了</td><td>端口可能变了</td><td>找端口</td></tr>
-    <tr><td>IP 被别的设备占用</td><td>这个 IP 现在是别的设备</td><td>找端口</td></tr>
-    <tr><td>完全没找到</td><td>没有发现无线调试 + 三种原因</td><td>深度查找 / 重启 adb</td></tr>
+    <tr><td>已找到</td><td>可直连 / 需配对（广播里带着端口）</td><td>连接</td></tr>
+    <tr><td>旧记录，端口开</td><td>端口可用</td><td>连接 / 忘记</td></tr>
+    <tr><td>换 IP 且旧端口能连</td><td>IP 变了</td><td>连接 / 忘记</td></tr>
+    <tr><td>换 IP 但旧端口不通</td><td>IP 变了</td><td>找端口 / 忘记</td></tr>
+    <tr><td>端口变了</td><td>端口变了</td><td>找端口 / 忘记</td></tr>
+    <tr><td>IP 被别的设备占用 / 没回应</td><td>IP 被占用 / 机器没回应（落在「上次用过的设备」）</td><td>找回这台 / 忘记</td></tr>
+    <tr><td>这次一台在线的都没有</td><td>占位说明一句，不挂任何入口</td><td>手动填 IP 和端口</td></tr>
   </table>
-  <p class="small muted" style="margin-top:10px">找回和深扫时，顶部显示「正在为 RMX3366 找端口… 37%」和「停止」，不铺每台设备的进度。</p>
+  <p class="small muted" style="margin-top:10px">找端口时，顶部显示「正在为 RMX3366 找端口… 37%」和「停止」，不铺每台设备的进度。</p>
 
   <h2>边界</h2>
   <div class="card">
     <ul>
-      <li>只处理本机所在 IPv4 /24；访客网络、AP 隔离、跨网段找不到。</li>
-      <li>手机「无线调试」必须开着；关了就没有 adbd 端口，深扫也找不到。</li>
-      <li>深扫只负责找到 adbd，不负责配对；出现 <code>unauthorized</code> 仍要在手机上允许。</li>
+      <li>只处理本机所在 IPv4 /24，网关和本机自身不列出；访客网络、AP 隔离、跨网段找不到。</li>
+      <li>手机「无线调试」必须开着；关了就没有 adbd 端口，找端口也找不到。</li>
+      <li>网段里其它在线主机（电视、电脑、打印机）不列出，网段扫描只用于判断认得的设备是否还在线。</li>
       <li>端口扫 32768–65535，另补 5555；固定到其它低位端口的设备不保证能扫到。</li>
+      <li>换网络后手机随机 MAC 会变：旧记录会表现为「没回应」+ 新地址「未识别」两行，靠找端口重新认领身份。</li>
     </ul>
   </div>
 

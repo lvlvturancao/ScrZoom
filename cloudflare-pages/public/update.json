@@ -1,11 +1,11 @@
 {
-  "versionName": "0.3.0",
-  "versionCode": 6,
-  "title": "水月清影 0.3.0",
-  "notes": "0.3.0：无线连接重做。扫描按设备身份（序列号/MAC）查找，手机换 IP 或端口后可找回；新增单台「找端口」和「深度查找局域网」，带进度、可停止；所有连接都验证设备状态，不再把 OPPO 等专有端口误判为无线调试；地址簿不再因 IP 复用串设备或误删记录。",
-  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.3.0-win-x64.zip",
-  "size": 12091622,
-  "sha256": "9655b83a094921aa517974fc95ed0a6d827f04cd1188f2e50c990017899d5571",
+  "versionName": "0.4.0",
+  "versionCode": 7,
+  "title": "水月清影 0.4.0",
+  "notes": "无线连接改为按网段探活：广播到的和上次连过的在线设备直接列出，端口不对点「找端口」单独扫这一台；没回应的落到「上次用过的设备」。自动接管被别的程序（手机助手）占用的 adb 服务，修复无线连接提示 failed to connect、扫描收不到广播的问题。修复高清渲染选中「满屏填充」几秒后被冲回 1.0× 的问题。",
+  "url": "https://shuiyue-30d.pages.dev/shuiyue-0.4.0-win-x64.zip",
+  "size": 11785934,
+  "sha256": "6dd6d02c4eaf74224db2a49dc9215f00f219d1cc233822dc150fc93a1ce37f39",
   "force": false,
-  "published": "2026-10-27"
+  "published": "2026-10-30"
 }
