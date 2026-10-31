@@ -160,8 +160,15 @@ public class MainForm : Form
         public bool scaled;   // 这一路启动前改过设备分辨率，收尾时要还原
         public int displayId; // 虚拟屏这一路占用的 display id，拉回时要用
         public string appPkg = "";
+        public string kbd = "sys";  // 这一路的键盘通道：sys 系统注入 / hw 物理键盘 / off 关闭
         public bool stolen;   // 应用被手机侧打开，虚拟屏已经空了
+        public bool intentional;                 // 用户主动关的：不触发自动重连
+        public DateTime startedAtDt;             // 用来判断这一路活了多久
+        public int retryGen;                     // 连续自动重连次数（活久了会归零）
+        public Func<Task<object>> retry;         // 异常退出时用原参数再来一次
     }
+    // 给界面的一次性提示（自动重连这类后台事件没地方推，扫描时捎带回去）
+    static string uiNotice = "";
     static readonly List<CastSession> Sessions = new List<CastSession>();
     static readonly object SessionLock = new object();
     CastSession lastSpawned;
@@ -239,6 +246,7 @@ public class MainForm : Form
                 { "displayId", s.displayId },
                 { "appPkg", s.appPkg },
                 { "appName", AppNote(s.appPkg) },
+                { "kbd", s.kbd },
                 { "stolen", s.stolen } });
         return list;
     }
@@ -324,6 +332,7 @@ public class MainForm : Form
         int pid;
         if (!int.TryParse(Ps(p, "pid"), out pid) || pid <= 0) return Err("没指定要关哪一路");
         bool ok = false;
+        MarkIntentional(pid);   // 用户主动关的，别触发自动重连
         try
         {
             var pr = Process.GetProcessById(pid);
@@ -347,6 +356,7 @@ public class MainForm : Form
         foreach (var s in LiveSessions())
         {
             if (s.deviceId != id) continue;
+            MarkIntentional(s.pid);   // 这是用户点「结束投屏」，不算异常掉线
             bool closed = false;
             try { closed = Process.GetProcessById(s.pid).CloseMainWindow(); } catch { }
             if (closed) n++;
@@ -384,10 +394,23 @@ public class MainForm : Form
         string id = Convert.ToString(pend["id"]);
         if (string.IsNullOrEmpty(id)) { try { File.Delete(PendingFile); } catch { } return; }
         if (!RestoreOnClose()) return;
-        var r = await Restore(new Dictionary<string, object> { { "id", id } });
+        // 记录里存的是断开那一刻的完整地址，无线调试一开关端口就变，照原样还原必然失败。
+        // 所以先看它现在在不在，不在就按同一台机器的 IP 找它当前连着的地址。
+        string target = id;
+        if (await DeviceState(id) != "device")
+        {
+            string host = Tv(pend, "host");
+            if (string.IsNullOrEmpty(host)) host = HostOf(id);
+            var conn = await ConnectedWireless();
+            string hit = conn.FirstOrDefault(c => string.Equals(HostOf(c), host, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(hit)) return;   // 这台还没回来，继续等
+            target = hit;
+            Log("待还原的设备换了地址：" + id + " → " + target);
+        }
+        var r = await Restore(new Dictionary<string, object> { { "id", target } });
         var d = r as Dictionary<string, object>;
         if (d != null && d.ContainsKey("error")) Log("重连后补还原未完成: " + d["error"]);
-        else { try { File.Delete(PendingFile); } catch { } Log("重连后补还原完成 " + id); }
+        else { try { File.Delete(PendingFile); } catch { } Log("重连后补还原完成 " + target); }
     }
     static readonly object NameLock = new object();
 
@@ -825,6 +848,8 @@ public class MainForm : Form
             case "wifi-relocate-poll": return RelocatePoll(p);
             case "wifi-deep-scan": return await DeepScanStart(p);
             case "wifi-find-cancel": return CancelWifiJob();
+            case "kbd-probe": return await KbdProbe(p);
+            case "kbd-hardkb-settings": return await KbdHardKeySettings(p);
         }
         return Err("未知操作 " + action);
     }
@@ -961,6 +986,76 @@ public class MainForm : Form
         });
     }
 
+    // 投屏异常退出时自动重连一次：把这次启动的入参留一份，带 noRetry 标记再调同一个启动函数。
+    // 只重试一次，避免端口/网络彻底不通时无限循环；用户主动关掉的（intentional）不重连。
+    void ArmRetry(Dictionary<string, object> p, Func<Dictionary<string, object>, Task<object>> launcher)
+    {
+        var sess = lastSpawned;
+        if (sess == null) return;
+        int gen = 0;
+        int.TryParse(Ps(p, "retryGen", "0"), out gen);
+        // 这一路活过 90 秒再掉，说明链路本来能用，重试次数重新计
+        if ((DateTime.Now - sess.startedAtDt).TotalSeconds >= 90) gen = 0;
+        if (gen >= 3)
+        {
+            uiNotice = "这台设备反复掉线（已自动重连 3 次），先停下来，检查网络或改用数据线";
+            Log("自动重连次数用尽 " + sess.deviceId);
+            return;
+        }
+        var p2 = new Dictionary<string, object>(p);
+        p2["retryGen"] = (gen + 1).ToString();
+        sess.retry = () => launcher(p2);
+    }
+
+    // 无线投屏最容易死在一个地方：设备自己息屏休眠，Wi-Fi 跟着掉，连接就断。
+    // 默认在投屏期间让设备保持活跃（引擎的 --keep-active，靠模拟轻量活动保屏幕常亮）；
+    // 想省电可以在「更多参数」里关掉。默认值走 "1"，没传也当开。
+    static void AddAwakeOpts(List<string> a, Dictionary<string, object> p)
+    {
+        if (Ps(p, "keepActive", "1") != "0") a.Add("--keep-active");
+    }
+
+    // 键盘通道：sys=系统注入（默认，不会顶掉手机软键盘，电脑能直接打中文）
+    //           hw=物理键盘（相当于给设备插了把实体键盘，游戏按键手感，但软键盘会被收起）
+    //           off=不转发键盘
+    // --display-ime-policy 只在虚拟屏那一路传：引擎实测「只支持第二块屏」，主屏传了会直接报错退出。
+    // 不加 --prefer-text：它把按键转成文本事件，会打坏依赖键码的快捷键和游戏。
+    static void AddKeyboardOpts(List<string> a, Dictionary<string, object> p, bool virtualDisplay)
+    {
+        string k = Ps(p, "kbd", "sys");
+        a.Add(k == "hw" ? "--keyboard=uhid" : (k == "off" ? "--keyboard=disabled" : "--keyboard=sdk"));
+        if (virtualDisplay && k != "off") a.Add("--display-ime-policy=local");
+        if (Ps(p, "legacyPaste", "0") == "1") a.Add("--legacy-paste");
+    }
+
+    // 探测这台设备有没有物理键盘通道：/dev/uhid 读不到，选「物理键盘」这一路多半没反应。
+    // 只用来给界面上的选项做提示，不参与启动决策（不静默降级，让用户自己看到）。
+    async Task<object> KbdProbe(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id");
+        if (id.Length == 0) return Err("没指定设备");
+        var uh = await AdbT(3000, id, "shell", "ls", "/dev/uhid");
+        var ap = await AdbT(2000, id, "shell", "getprop", "ro.build.version.sdk");
+        int api;
+        int.TryParse((ap.text ?? "").Trim(), out api);
+        bool uhid = (uh.text ?? "").IndexOf("uhid", StringComparison.OrdinalIgnoreCase) >= 0
+                    && (uh.text ?? "").IndexOf("No such file", StringComparison.OrdinalIgnoreCase) < 0;
+        return new Dictionary<string, object> {
+            { "ok", true }, { "uhid", uhid }, { "api", api },
+            { "text", uhid ? "" : "这台设备没有物理键盘通道，选「物理键盘」时按键可能没反应；打字不受影响。" } };
+    }
+
+    // 物理键盘要在手机侧的「实体键盘」设置里配一次，替用户把那页打开
+    async Task<object> KbdHardKeySettings(Dictionary<string, object> p)
+    {
+        var r = await Adb(Ps(p, "id"), "shell", "am", "start", "-a", "android.settings.HARD_KEYBOARD_SETTINGS");
+        string t = (r.text ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
+        bool ok = r.ok && t.IndexOf("Error", StringComparison.OrdinalIgnoreCase) < 0
+                      && t.IndexOf("Exception", StringComparison.OrdinalIgnoreCase) < 0;
+        return new Dictionary<string, object> {
+            { "ok", ok }, { "text", ok ? "已在手机上打开实体键盘设置" : "这台设备没有这个设置页：" + (t.Length > 90 ? t.Substring(0, 90) : t) } };
+    }
+
     // 置顶 / 无边框 / 指定窗口宽度，都是 scrcpy 原生参数；视频流尺寸不受影响
     static void AddWindowOpts(List<string> a, Dictionary<string, object> p)
     {
@@ -1073,7 +1168,26 @@ public class MainForm : Form
             ver = RegexVal(rv.text, "scrcpy\\s+([0-9.]+)") ?? "";
         }
         Log("scan done: devices=" + list.Count + " ver=" + ver + " engine=" + (engineDir ?? "NULL"));
-        return new Dictionary<string, object> { { "devices", list }, { "version", ver }, { "engine", engineDir ?? "" } };
+        // 有没还原成功的记录：设备一回来就补还原，顺便把这件事告诉界面
+        string pendingHost = "";
+        if (File.Exists(PendingFile))
+        {
+            await TryRestorePending();
+            if (File.Exists(PendingFile))
+            {
+                var pd = ReadJson(PendingFile) as Dictionary<string, object>;
+                if (pd != null)
+                {
+                    pendingHost = Tv(pd, "host");
+                    if (string.IsNullOrEmpty(pendingHost)) pendingHost = Tv(pd, "id");
+                }
+            }
+        }
+        string noticeNow = uiNotice;
+        uiNotice = "";
+        return new Dictionary<string, object> {
+            { "devices", list }, { "version", ver }, { "engine", engineDir ?? "" },
+            { "restorePending", pendingHost }, { "notice", noticeNow } };
     }
 
     static string RegexVal(string s, string pat)
@@ -1108,12 +1222,18 @@ public class MainForm : Form
     object LaunchMirror(Dictionary<string, object> p)
     {
         var a = new List<string> { "-s", Ps(p, "id"), "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
-            "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid" };
+            "--max-fps=" + Ps(p, "fps", "60") };
         if (Ps(p, "fullscreen") == "1") { a.Add("--fullscreen"); AddMonitorPos(a, p); }
         else AddWindowOpts(a, p);
-        return Spawn(a, Ps(p, "id"),
+        AddKeyboardOpts(a, p, false);
+        AddAwakeOpts(a, p);
+        int gen0 = 0; int.TryParse(Ps(p, "retryGen", "0"), out gen0);
+        var res = Spawn(a, Ps(p, "id"),
             Ps(p, "fullscreen") == "1" ? "镜像 · 全屏" : "镜像",
-            Ps(p, "size"), false, "");
+            Ps(p, "size"), false, "", gen0);
+        var d = res as Dictionary<string, object>;
+        if (d != null && !d.ContainsKey("error")) ArmRetry(p, q => Task.FromResult(LaunchMirror(q)));
+        return res;
     }
 
     async Task<object> LaunchWindow(Dictionary<string, object> p)
@@ -1122,9 +1242,11 @@ public class MainForm : Form
         // 记下启动前的虚拟屏集合，窗口起来后 diff 出本次新加的 display id
         var before = await ListDisplayIds(id);
         var a = new List<string> { "-s", id, "--new-display=" + Ps(p, "size", "1280x720/240"),
-            "--video-bit-rate=" + Ps(p, "bitrate", "12M"), "--keyboard=uhid" };
+            "--video-bit-rate=" + Ps(p, "bitrate", "12M") };
         // 视频流保持虚拟屏原分辨率，电脑放不下时只缩窗口，不降清晰度
         AddWindowOpts(a, p);
+        AddKeyboardOpts(a, p, true);
+        AddAwakeOpts(a, p);
         string app = Ps(p, "app");
         string appPkg = "";
         if (app.Length > 0)
@@ -1134,7 +1256,8 @@ public class MainForm : Form
             if (!isPkg) Remember(app);
             else { appPkg = app; CountLaunch(app); }      // 应用列表按这个次数把常用的排到前面
         }
-        var res = Spawn(a, id, "虚拟屏", Ps(p, "size", "1280x720/240").Split('/')[0], false, appPkg);
+        int genW = 0; int.TryParse(Ps(p, "retryGen", "0"), out genW);
+        var res = Spawn(a, id, "虚拟屏", Ps(p, "size", "1280x720/240").Split('/')[0], false, appPkg, genW);
         var dict = res as Dictionary<string, object>;
         if (dict != null && dict.ContainsKey("ok") && Convert.ToBoolean(dict["ok"]))
         {
@@ -1153,6 +1276,7 @@ public class MainForm : Form
                 if (lastSpawned != null) lastSpawned.displayId = disp;   // 记住归属，掉屏时才知道该往哪块屏拉回
             }
         }
+        if (dict != null && !dict.ContainsKey("error")) ArmRetry(p, q => LaunchWindow(q));
         return res;
     }
 
@@ -1237,10 +1361,13 @@ public class MainForm : Form
         }
 
         var a = new List<string> { "-s", id, "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
-            "--max-fps=" + Ps(p, "fps", "60"), "--keyboard=uhid", "--fullscreen" };
+            "--max-fps=" + Ps(p, "fps", "60"), "--fullscreen" };
         // 全屏档由 scrcpy 铺满「窗口所在那块屏」，所以先把窗口原点摆到用户选的目标显示器
         AddWindowOpts(a, p);
-        var res = Spawn(a, id, "放大", w + "×" + h, true, "");
+        AddKeyboardOpts(a, p, false);
+        AddAwakeOpts(a, p);
+        int genS = 0; int.TryParse(Ps(p, "retryGen", "0"), out genS);
+        var res = Spawn(a, id, "放大", w + "×" + h, true, "", genS);
         var dict = res as Dictionary<string, object>;
         if (dict != null)
         {
@@ -1248,11 +1375,12 @@ public class MainForm : Form
                 dict["applied"] = new Dictionary<string, object> {
                     { "w", int.Parse(got[0]) }, { "h", int.Parse(got[1]) }, { "dpi", now["currentDpi"] } };
             if (notice.Length > 0) dict["notice"] = notice;
+            ArmRetry(p, q => LaunchScaled(q));
         }
         return res;
     }
 
-    object Spawn(List<string> a, string id, string mode, string size, bool scaled, string appPkg)
+    object Spawn(List<string> a, string id, string mode, string size, bool scaled, string appPkg, int retryGen = 0)
     {
         if (scrcpyExe == null) return Err("没找到 scrcpy.exe");
         Log("spawn " + mode + " " + id + " :: " + string.Join(" ", a));
@@ -1267,15 +1395,23 @@ public class MainForm : Form
                 WorkingDirectory = engineDir
             };
             var pr = Process.Start(psi);
+            string kbdMode = a.Contains("--keyboard=uhid") ? "hw"
+                : (a.Contains("--keyboard=disabled") ? "off" : "sys");
             var sess = new CastSession {
                 pid = pr.Id, deviceId = id,
                 deviceName = LookupName(LoadNames(), "", id),
                 mode = mode, size = size, scaled = scaled,
                 appPkg = appPkg ?? "",
-                startedAt = DateTime.Now.ToString("HH:mm")
+                kbd = kbdMode,
+                startedAt = DateTime.Now.ToString("HH:mm"),
+                startedAtDt = DateTime.Now,
+                retryGen = retryGen
             };
             lock (SessionLock) Sessions.Add(sess);
             lastSpawned = sess;
+            // 物理键盘通道同一台设备只能有一路占着，第二路常常打不开
+            bool kbdClash = kbdMode == "hw" && LiveSessions().Any(x => x.pid != pr.Id
+                && string.Equals(x.deviceId, id, StringComparison.OrdinalIgnoreCase) && x.kbd == "hw");
             int n = 0;
             // 开头 40 行走日志；同时留一份环形缓冲，退出时把最后几行打出来——
             // 断连原因通常只在最后几行，不留在缓冲里就查不到
@@ -1313,17 +1449,111 @@ public class MainForm : Form
                         var rr = await Restore(new Dictionary<string, object> { { "id", sess.deviceId } });
                         var rd = rr as Dictionary<string, object>;
                         bool bad = rd != null && rd.ContainsKey("error");
-                        if (bad) WriteJson(PendingFile, new Dictionary<string, object> { { "id", sess.deviceId } });
+                        if (bad) WriteJson(PendingFile, new Dictionary<string, object> {
+                            { "id", sess.deviceId }, { "host", HostOf(sess.deviceId) } });
                         Log("关闭投屏后自动还原 " + sess.deviceId + (bad ? " 失败：" + rd["error"] : " 完成"));
                     }
                     catch (Exception ex2) { Log("自动还原异常: " + ex2.Message); }
                 }
+                // 不是用户关的、也不是正常退出：先留一份设备端现场，再等设备回来用原参数重连
+                if (code != 0 && !sess.intentional)
+                {
+                    string tailText = string.Join("\n", last);
+                    var _c = Task.Run(() => CaptureDropLog(sess.deviceId, tailText));
+                    if (sess.retry != null)
+                    {
+                        var again = sess.retry;
+                        var _r = Task.Run(() => AutoReconnect(sess, again));
+                    }
+                }
             };
             pr.BeginOutputReadLine();
             pr.BeginErrorReadLine();
-            return new Dictionary<string, object> { { "ok", true }, { "cmd", "scrcpy " + string.Join(" ", a) } };
+            var res = new Dictionary<string, object> { { "ok", true }, { "cmd", "scrcpy " + string.Join(" ", a) } };
+            if (kbdClash)
+            {
+                Log("同一台设备已有物理键盘那一路，这一路可能抢不到键盘通道");
+                res["notice"] = "这台设备已经有一路在用物理键盘，这一路的键盘可能没反应。把先开的那一路改成「系统注入」就好。";
+            }
+            return res;
         }
         catch (Exception ex) { return Err(ex.Message); }
+    }
+
+    void MarkIntentional(int pid)
+    {
+        lock (SessionLock) { foreach (var s in Sessions) if (s.pid == pid) s.intentional = true; }
+    }
+
+    // 掉线现场：设备回来后把它的 Wi-Fi 状态、投屏进程最后的输出、最近几分钟 logcat 存成一份文件。
+    // 掉线当时设备往往已经不可达，所以这里先等它回来（最多一分钟），拿到就存。
+    async Task CaptureDropLog(string id, string sessionTail)
+    {
+        try
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                if (await DeviceState(id) == "device") break;
+                await Task.Delay(2000);
+            }
+            if (await DeviceState(id) != "device") { Log("掉线现场没抓到：设备一直没回来 " + id); return; }
+            var lg = await AdbT(15000, id, "shell", "logcat -d -v time -t 3000");
+            var wf = await AdbT(8000, id, "shell", "dumpsys wifi | grep -E 'mWifiInfo|StatsCurr|Detailed state'");
+            string dir = Path.Combine(DataDir, "logs");
+            Directory.CreateDirectory(dir);
+            string safe = id.Replace(':', '_').Replace('.', '_');
+            string file = Path.Combine(dir, "drop-" + safe + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".log");
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== 掉线现场 " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ==");
+            sb.AppendLine("设备: " + id);
+            sb.AppendLine();
+            sb.AppendLine("-- 投屏进程最后的输出 --");
+            sb.AppendLine(sessionTail ?? "");
+            sb.AppendLine("-- 设备 Wi-Fi 状态 --");
+            sb.AppendLine(wf == null ? "" : (wf.text ?? ""));
+            sb.AppendLine("-- logcat（最后 3000 行） --");
+            sb.AppendLine(lg == null ? "" : (lg.text ?? ""));
+            File.WriteAllText(file, sb.ToString(), new System.Text.UTF8Encoding(false));
+            uiNotice = "掉线现场已保存：" + file;
+            Log("掉线现场已保存 " + file);
+        }
+        catch (Exception ex) { Log("保存掉线现场失败: " + ex.Message); }
+    }
+
+    // 投屏异常断开：等设备回到 adb（最多一分钟），用原参数重连一次。
+    // 只兜"同一地址回来"；发现它换了端口就停手，提示用户到无线页确认，别自作主张换地址连。
+    async Task AutoReconnect(CastSession old, Func<Task<object>> again)
+    {
+        string id = old.deviceId, ip = HostOf(id);
+        string nm = string.IsNullOrEmpty(old.deviceName) ? id : old.deviceName;
+        int gen = old.retryGen;
+        uiNotice = nm + " 掉线了，正在自动重连" + (gen > 1 ? "（第 " + gen + " 次）" : "") + "…";
+        Log("自动重连开始 " + id);
+        for (int i = 0; i < 30; i++)
+        {
+            if (await DeviceState(id) == "device")
+            {
+                var r = await again();
+                var d = r as Dictionary<string, object>;
+                bool ok = d != null && !d.ContainsKey("error");
+                uiNotice = ok ? (nm + " 掉线后已自动重连") : (nm + " 掉线了，自动重连没成功，请手动连接");
+                Log("自动重连" + (ok ? "完成 " : "失败 ") + id);
+                return;
+            }
+            if (i == 3 || i == 10 || i == 20)
+            {
+                string md = await FindMdnsAddr(ip, 1);
+                if (!string.IsNullOrEmpty(md) && !string.Equals(md, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    uiNotice = nm + " 换了端口（" + md + "），没有自动换地址去连，请到无线连接页点「连接」";
+                    Log("自动重连发现新地址 " + md + "，交给用户确认");
+                    return;
+                }
+            }
+            await Task.Delay(2000);
+        }
+        uiNotice = nm + " 掉线了，一直没回到网络；自动重连已停止";
+        Log("自动重连放弃 " + id);
     }
 
     Task<object> ListWindows()
@@ -1341,6 +1571,7 @@ public class MainForm : Form
 
     async Task<object> CloseWindows()
     {
+        lock (SessionLock) { foreach (var s in Sessions) s.intentional = true; }
         foreach (var pr in Process.GetProcessesByName("scrcpy")) { try { pr.CloseMainWindow(); } catch { } }
         await Task.Delay(1200);
         return await ListWindows();
@@ -1566,12 +1797,12 @@ public class MainForm : Form
 
         var connected = await ConnectedWireless();
         var connIps = new HashSet<string>(connected.Select(c => c.Split(':')[0]), StringComparer.OrdinalIgnoreCase);
-        var usbSerials = await ConnectedSerials();
 
         // 广播和网段探活同时跑：广播负责认名字和配对端口，探活负责"IP 通就算在线"
         LanTarget lan = GetLanTarget(entries.Count > 0 ? entries[0].addr.Split(':')[0] : null);
         bool lanOk = lan != null && !finding && !light;
-        var mdnsTask = CollectMdns(3, 2500, 400);
+        // 广播全无时每轮都要等满超时，普通扫描压到两轮；配对后那次更要准，保留三轮
+        var mdnsTask = CollectMdns(light ? 3 : 2, light ? 2500 : 2200, 300);
         Task<List<LanHost>> sweepTask = lanOk ? ArpSweep(lan, null) : Task.FromResult(new List<LanHost>());
         await Task.WhenAll(mdnsTask, sweepTask);
         var mdns = mdnsTask.Result;
@@ -1592,12 +1823,13 @@ public class MainForm : Form
         foreach (var dev in mdns.devs)
         {
             if (string.IsNullOrEmpty(dev.ip) || claimed.Contains(dev.ip)) continue;
-            if (!string.IsNullOrEmpty(dev.serial) && usbSerials.Contains(dev.serial)) continue;  // 插着线的同一台
             string addr = dev.connAddr ?? dev.pairAddr ?? dev.ip;
             WifiEntry entry = entries.FirstOrDefault(e =>
                 (!string.IsNullOrEmpty(dev.serial) &&
                  (IdEq(e.serial, dev.serial) || IdEq(e.mdnsId, dev.serial))) ||
                 e.addr.Split(':')[0] == dev.ip);
+            // 插着数据线也照样列无线地址：那正是"能搜到、端口是新的"那条可用路径；
+            // 地址簿里同一 IP 的旧端口在下面会被 usedEntries 按掉，不会留假信息
             string name = LookupName(names, dev.serial, addr);
             if (name.Length == 0 && entry != null) name = entry.name;
             if (entry != null)
@@ -1642,7 +1874,7 @@ public class MainForm : Form
             probeIps[e.addr] = hostIp;
         }
 
-        var probeOut = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var probeOut = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var probeTasks = new List<Task>();
         foreach (var e in probeEntries)
         {
@@ -1653,33 +1885,10 @@ public class MainForm : Form
                 int port = 0;
                 string ps = en.addr.Contains(":") ? en.addr.Split(':')[1] : "";
                 int.TryParse(ps, out port);
-                bool open = port > 0 && await PortProbe(hip, port, 1000);
-                lock (probeOut) probeOut[en.addr] = open;
+                string verdict = await ProbeAdbPort(hip, port);
+                lock (probeOut) probeOut[en.addr] = verdict;
             }));
         }
-        await Task.WhenAll(probeTasks);
-
-        foreach (var e in probeEntries)
-        {
-            string hip = probeIps[e.addr];
-            bool open;
-            probeOut.TryGetValue(e.addr, out open);
-            bool moved = !string.Equals(hip, e.addr.Split(':')[0], StringComparison.OrdinalIgnoreCase);
-            string name = e.name.Length > 0 ? e.name : LookupName(names, e.serial, e.addr);
-            string note;
-            if (moved)
-                note = open ? ("已经换了 IP（" + hip + "），点「连接」建立连接；扫描不会自动连接。")
-                            : ("已经换了 IP（" + hip + "），端口可能也变了；点「找端口」。");
-            else
-                note = open ? "上次的端口还开着；点「连接」确认是不是这台。"
-                            : "端口可能变了：无线调试每次开关都会换端口，点「找端口」找回。";
-            var item = KnownItem(e, name, open ? "idle" : "fail", moved ? "moved" : (open ? "manual" : "port"), note, true);
-            item["addr"] = hip + ":" + (e.addr.Contains(":") ? e.addr.Split(':')[1] : "0");
-            item["bookAddr"] = e.addr;
-            if (moved) item["hintIp"] = hip;
-            devices.Add(item);
-        }
-
         // 3) 剩下的地址簿条目：补 ping 复核（漏一包不算掉线），真不通才进"上次用过的"
         var restTasks = new List<Task<Dictionary<string, object>>>();
         foreach (var e in entries)
@@ -1690,15 +1899,17 @@ public class MainForm : Form
             {
                 string ip = en.addr.Split(':')[0];
                 string nm = en.name.Length > 0 ? en.name : LookupName(names, en.serial, en.addr);
-                if (await PingAlive(ip))
+                // 网段扫描已经 ping 过一轮的，只补两包复核；不在被扫网段的才做完整复核，否则一次扫描要多等三秒
+                bool inLan = lan != null && SameSubnet(lan.localIp, lan.prefix, ip);
+                if (await (inLan ? PingQuick(ip) : PingAlive(ip)))
                 {
-                    // IP 通但没进被扫网段（多网卡/VPN）：照样算在线，端口单独试一次
+                    // IP 通但没进被扫网段（多网卡/VPN）：照样算在线，端口同样要真验一次
                     int port = 0;
                     string ps = en.addr.Contains(":") ? en.addr.Split(':')[1] : "";
                     int.TryParse(ps, out port);
-                    bool open = port > 0 && await PortProbe(ip, port, 1000);
-                    return KnownItem(en, nm, open ? "idle" : "fail", open ? "manual" : "port",
-                        open ? "上次的端口还开着；点「连接」确认是不是这台。" : "端口可能变了：点「找端口」找回。", true);
+                    string verdict = await ProbeAdbPort(ip, port);
+                    return KnownItem(en, nm, verdict == "adb" ? "idle" : "fail", PortReason(verdict, false),
+                        PortNote(verdict, false, ip), true);
                 }
                 LanHost h = hostByIp.ContainsKey(ip) ? hostByIp[ip] : null;
                 if (h != null)
@@ -1708,7 +1919,24 @@ public class MainForm : Form
                     "没回应：可能息屏后 Wi-Fi 断了，也可能换了 IP。点亮屏幕再点「重新扫描」试试。", false);
             }));
         }
-        await Task.WhenAll(restTasks);
+
+        // 端口验证和离线复核互不依赖，一起等；分成两段串行会把一次扫描拖到十几秒
+        await Task.WhenAll(probeTasks.Cast<Task>().Concat(restTasks));
+
+        foreach (var e in probeEntries)
+        {
+            string hip = probeIps[e.addr];
+            string verdict;
+            probeOut.TryGetValue(e.addr, out verdict);
+            if (string.IsNullOrEmpty(verdict)) verdict = "closed";
+            bool moved = !string.Equals(hip, e.addr.Split(':')[0], StringComparison.OrdinalIgnoreCase);
+            string name = e.name.Length > 0 ? e.name : LookupName(names, e.serial, e.addr);
+            var item = KnownItem(e, name, verdict == "adb" ? "idle" : "fail", PortReason(verdict, moved), PortNote(verdict, moved, hip), true);
+            item["addr"] = hip + ":" + (e.addr.Contains(":") ? e.addr.Split(':')[1] : "0");
+            item["bookAddr"] = e.addr;
+            if (moved) item["hintIp"] = hip;
+            devices.Add(item);
+        }
         foreach (var t in restTasks)
         {
             var it = t.Result;
@@ -1746,24 +1974,100 @@ public class MainForm : Form
         return pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
+    // 端口探测的并发上限：验证要真连一次再断开，别几台一起把 adb 问爆
+    static readonly SemaphoreSlim PortGate = new SemaphoreSlim(3);
+
+    // 只看 TCP 通不通会被骗：厂商自己的服务也占这种端口（实测 realme 的 46888 能连上但不是 adb，
+    // 真端口是当时广播里那个）。所以要真连一次、看设备状态，验完立刻断开——扫描不该把设备悄悄连上。
+    // 返回：adb=确认是无线调试 / auth=找到了但要重新配对 / notadb=端口开着但不是无线调试 / closed=不通
+    // 假 adb 端口会让 adb connect 卡满十秒（实测 realme 的 46888 能连上但不是 adb）。
+    // 验过的结论落盘，重启程序也不用重验；十分钟过期，避免设备换了用途还按旧结论显示。
+    string PortCacheFile { get { return Path.Combine(DataDir, "port-probe-cache.json"); } }
+
+    bool PortCacheTryGet(string addr, out string verdict)
+    {
+        verdict = "";
+        var map = ReadJson(PortCacheFile) as Dictionary<string, object>;
+        if (map == null) return false;
+        object o;
+        if (!map.TryGetValue(addr, out o)) return false;
+        var d = o as Dictionary<string, object>;
+        if (d == null) return false;
+        string v = Convert.ToString(d["verdict"]);
+        DateTime at;
+        if (!DateTime.TryParse(Convert.ToString(d["at"]), out at)) return false;
+        if ((DateTime.Now - at).TotalMinutes >= 10) return false;
+        if (v != "adb" && v != "notadb") return false;
+        verdict = v;
+        return true;
+    }
+
+    void PortCachePut(string addr, string verdict)
+    {
+        var map = ReadJson(PortCacheFile) as Dictionary<string, object>;
+        if (map == null) map = new Dictionary<string, object>();
+        map[addr] = new Dictionary<string, object> {
+            { "verdict", verdict }, { "at", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") } };
+        WriteJson(PortCacheFile, map);
+    }
+
+    async Task<string> ProbeAdbPort(string ip, int port)
+    {
+        if (port <= 0) return "closed";
+        string addr = ip + ":" + port;
+        string cached;
+        if (PortCacheTryGet(addr, out cached)) return cached;
+        if (!await PortProbe(ip, port, 700)) return "closed";
+        await PortGate.WaitAsync();
+        string verdict = "notadb";
+        try
+        {
+            // 扫描里的验证要克制：连接最多等 2.5 秒，判定最多再等 2 秒
+            var cv = await ConnectVerified(addr, 2000, 2500);
+            verdict = (bool)cv["ok"] ? "adb"
+                : ("unauthorized".Equals(Convert.ToString(cv["state"])) ? "auth" : "notadb");
+        }
+        catch { verdict = "notadb"; }
+        PortGate.Release();
+        // 扫描不许把设备悄悄连上：验完就断开（客户端超时被杀时，服务端可能还留着这条）
+        try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+        PortCachePut(addr, verdict);
+        return verdict;
+    }
+
+    static string PortReason(string verdict, bool moved)
+    {
+        if (moved) return "moved";
+        return verdict == "adb" ? "manual" : (verdict == "auth" ? "auth" : (verdict == "notadb" ? "notadb" : "port"));
+    }
+
+    static string PortNote(string verdict, bool moved, string hip)
+    {
+        if (verdict == "auth") return "找到了这台，但要重新配对：在手机无线调试页用配对码再配一次。";
+        if (verdict == "notadb") return moved
+            ? ("它的 IP 是 " + hip + "，但这个端口不是无线调试；点「找端口」找回真正的端口。")
+            : "这个端口开着，但不是无线调试（厂商自带的服务也占这种端口）；点「找端口」找回真正的端口。";
+        if (verdict == "adb") return moved
+            ? ("已经换了 IP（" + hip + "），端口验证过是无线调试；点「连接」建立连接。")
+            : "端口验证过是无线调试；点「连接」建立连接，扫描不会自动连。";
+        // 端口不通不一定是端口变了：也可能手机上把无线调试关掉了，两种从网络上是分不出来的，
+        // 所以文案只陈述"连不上"，把两种可能都摆出来，别断言成"端口变了"。
+        return moved ? ("已经换了 IP（" + hip + "），但这个端口连不上：可能端口变了，也可能无线调试没开。点「找端口」重扫这一台。")
+                     : "这个端口连不上：手机可能换了端口，也可能无线调试被关掉了。先看一眼手机上的「无线调试」是不是开着，再点「找端口」重扫这一台。";
+    }
+
+    // 网段扫描已经 ping 过一轮时的轻量复核：连发两包，约 1.2 秒，不再走"单包 + 三包"那套
+    async Task<bool> PingQuick(string ip)
+    {
+        var pg = await Run("ping", new[] { "-n", "2", "-w", "600", ip }, 5000);
+        return pg.text.IndexOf("TTL=", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     async Task<bool> PortProbe(string ip, int port, int timeoutMs)
     {
         IPAddress a;
         if (port <= 0 || port > 65535 || !IPAddress.TryParse(ip, out a)) return false;
         return await ConnectProbe(a, port, timeoutMs);
-    }
-
-    // 插着 USB 的设备序列号：广播里同一台不会再出现一次"可直连"
-    async Task<HashSet<string>> ConnectedSerials()
-    {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var r = await Run(adbExe, new[] { "devices" });
-        foreach (var line in (r.text ?? "").Split('\n'))
-        {
-            var p = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (p.Length >= 2 && p[0].IndexOf(':') < 0 && p[0] != "List") set.Add(p[0]);
-        }
-        return set;
     }
 
     // adb connect 的报错跟着系统语言变：英文 refused、中文「积极拒绝 (10061)」都要认。
@@ -1959,9 +2263,9 @@ public class MainForm : Form
 
     // adb 的 "connected to" 不代表可用：OPPO 等设备的专有端口也会先连上再变 offline。
     // 只有 adb devices 显示 device，并且 shell 能回声，才算真正连上。
-    async Task<Dictionary<string, object>> ConnectVerified(string addr, int waitMs)
+    async Task<Dictionary<string, object>> ConnectVerified(string addr, int waitMs, int connectMs = 8000)
     {
-        var r = await Run(adbExe, new[] { "connect", addr }, 8000);
+        var r = await Run(adbExe, new[] { "connect", addr }, connectMs);
         string text = (r.text ?? "").Trim();
         string low = text.ToLowerInvariant();
         // 不在这里凭提示语判授权：OPPO 这类专有服务也会回 failed to authenticate。
@@ -2452,6 +2756,30 @@ public class MainForm : Form
                 if (tk.Length < 2 || tk[0] == "List" || tk[0].Contains("of")) continue;
                 if (tk[1] != "device" && tk[1] != "offline" && tk[1] != "unauthorized") continue;
                 devs.Add(new Dictionary<string, object> { { "id", tk[0] }, { "via", tk[0].Contains(":") ? "wireless" : "usb" }, { "state", tk[1] } });
+            }
+        }
+
+        // 广播一条都没有时先别看网络：数据线连着的设备如果根本没在监听无线端口，
+        // 那是手机上的「无线调试」没开——广播自然也不会有，说成"网络不转发"会把人带偏。
+        if (mdnsVerdict == "silent")
+        {
+            foreach (var o in devs)
+            {
+                var d = o as Dictionary<string, object>;
+                if (d == null || Convert.ToString(d["via"]) != "usb") continue;
+                var tcp = await AdbT(3000, Convert.ToString(d["id"]), "shell", "cat /proc/net/tcp /proc/net/tcp6");
+                bool listening = false;
+                foreach (var row in (tcp.text ?? "").Split('\n'))
+                {
+                    var tk = row.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (tk.Length < 4 || tk[3] != "0A") continue;           // 0A = LISTEN
+                    var seg = tk[1].Split(':');
+                    if (seg.Length != 2) continue;
+                    int port;
+                    if (!int.TryParse(seg[1], System.Globalization.NumberStyles.HexNumber, null, out port)) continue;
+                    if (port >= 32768 || port == 5555) { listening = true; break; }
+                }
+                if (!listening) { mdnsVerdict = "wifiOff"; break; }
             }
         }
 
@@ -3314,7 +3642,11 @@ public class MainForm : Form
             // 投屏目标要跟着透传，否则从应用列表开的窗口会掉回默认屏
             { "monIndex", Ps(p, "monIndex", "-1") },
             { "alwaysOnTop", Ps(p, "alwaysOnTop", "0") },
-            { "borderless", Ps(p, "borderless", "0") } });
+            { "borderless", Ps(p, "borderless", "0") },
+            // 键盘通道和粘贴方式也要透传，否则从应用列表开的窗口会掉回默认设置
+            { "kbd", Ps(p, "kbd", "sys") },
+            { "legacyPaste", Ps(p, "legacyPaste", "0") },
+            { "keepActive", Ps(p, "keepActive", "1") } });
         var dict = lw as Dictionary<string, object>;
         object dv;
         if (dict == null || !dict.TryGetValue("displayId", out dv))

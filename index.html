@@ -74,11 +74,17 @@ button,select,input{font:inherit;color:inherit}
 .tag{font-size:11px;padding:3px 10px;border-radius:999px;background:var(--sunken);color:var(--text-2);border:1px solid var(--line)}
 .tag.ok{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
 .tag.no{color:var(--text-3)}
+/* 异常状态：红色标签，标签本身就是"为什么"的入口，悬停或点一下看原因 */
+.tag.bad{background:var(--bad-soft);border-color:#e6b4b5;color:var(--bad)}
+.tag.tip{width:auto;height:auto;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:500;line-height:1.6;justify-content:flex-start;cursor:help}
+.tag.tip:hover,.tag.tip.open{background:#f8dedf;border-color:var(--bad);color:var(--bad)}
 .wnote{font-size:11.5px;color:var(--text-3);margin-top:3px;line-height:1.55}
-/* 无线待连接列表：文字让位、按钮不缩，窗口窄时整组动作换到第二行 */
+/* 无线待连接列表：状态标签跟着名字走，右侧只放按钮，一行放得下 */
 #wifiDevs .row{flex-wrap:wrap;row-gap:8px}
 #wifiDevs .row .wmain{flex:1 1 200px;min-width:0}
-#wifiDevs .row .acts{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto}
+#wifiDevs .row .wmain .nm{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#wifiDevs .row .acts{display:flex;align-items:center;gap:7px;flex-shrink:0;margin-left:auto}
+#wifiDevs .row .b2{padding:7px 12px}
 #wifiDevs .row .tag,#wifiDevs .row .b2{flex-shrink:0;white-space:nowrap}
 /* 待连接列表分两组：扫描到的在上、上次用过的在下；空的那组用占位行托住，不留空框 */
 #wifiDevs .subh{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 8px}
@@ -162,10 +168,16 @@ button,select,input{font:inherit;color:inherit}
 /* ── 信息提示：悬浮/点击显示说明，保持界面精简 ── */
 .tip{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:10px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:middle;transition:.16s}
 .tip:hover,.tip.open{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+/* 显示器把画面压小、没能按设备分辨率出图时，帮助图标换成红色感叹号，别让人自己发现 */
+.tip.warn{color:var(--bad);border-color:var(--bad);background:var(--bad-soft);font-weight:800}
+.tip.warn:hover,.tip.warn.open{color:var(--bad);border-color:var(--bad);background:#f8dedf}
 .tip .bub{display:none}
 #bubHost{position:fixed;top:0;left:0;z-index:999;pointer-events:none;display:none}
 #bubHost.show{display:block}
-#bubHost .bub{position:absolute;width:max-content;max-width:min(310px,calc(100vw - 24px));background:var(--navy);color:#e9f2f8;font-size:11.5px;line-height:1.75;font-weight:400;padding:11px 14px;border-radius:13px;box-shadow:0 18px 40px -14px rgba(9,28,46,.6);text-align:left;white-space:normal;overflow-wrap:break-word;word-break:break-word}
+#bubHost .bub{position:absolute;width:max-content;max-width:min(330px,calc(100vw - 24px));background:var(--navy);color:#e9f2f8;font-size:11.5px;line-height:1.8;font-weight:400;padding:11px 14px;border-radius:13px;box-shadow:0 18px 40px -14px rgba(9,28,46,.6);text-align:left;white-space:normal;overflow-wrap:break-word;word-break:break-word}
+/* 帮助气泡里的分段：一段一件事，段间留空，别糊成一面墙 */
+#bubHost .bub p{margin:0 0 8px}
+#bubHost .bub p:last-child{margin:0}
 #bubHost .bub b{color:#fff}
 #bubHost .bub::before{content:'';position:absolute;left:var(--ar,50%);top:-5px;transform:translateX(-50%) rotate(45deg);width:10px;height:10px;background:var(--navy)}
 #bubHost .bub.up::before{top:auto;bottom:-5px}
@@ -268,7 +280,7 @@ button,select,input{font:inherit;color:inherit}
       <div class="page on" id="pg-cast">
         <div class="sec">
           <div class="h" style="align-items:center"><b>选择设备</b>
-            <span class="tip">?<span class="bub">USB：设备需先开启「开发者选项 → USB 调试」，插线后在手机上允许本机调试。<br>无线：设备需先开启「无线调试」，首次连接按提示填配对码。<br>选中设备后，再往下选投屏方式和档位。</span></span>
+            <span class="tip">?<span class="bub"><p>USB：设备需先开启「开发者选项 → USB 调试」，插线后在手机上允许本机调试。</p><p>无线：设备需先开启「无线调试」，首次连接按提示填配对码。</p><p>选中设备后，再往下选投屏方式和档位。</p></span></span>
           </div>
           <div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">
             <div class="seg" id="devTab">
@@ -279,7 +291,7 @@ button,select,input{font:inherit;color:inherit}
             <button class="iconbtn" id="btnScan">重新扫描</button>
           </div>
           <div class="wifi" id="wifiPanel" hidden>
-            <div class="wt">开启无线调试后点「重新扫描」；首次连接需配对码。<span class="tip inline">?<span class="bub">开启无线调试（ADB over Wi-Fi，TLS 加密通道）后，点「重新扫描」：本网段探活确认上次连过的设备还在不在，同时收广播，找到的列在下面，点「连接」直连；点设备行本身只把 IP 和端口填到底部输入框。端口不对就点「找端口」单独扫这一台，不会去扫别的设备。首次连接需输入配对码（无线调试页会显示），配对密钥持久保存在设备端，之后重开无需再配；连接端口由系统随机分配，本工具每次自动发现，无需记忆。如扫描不到设备或端口，可使用手动输入连接。</span></span></div>
+            <div class="wt">开启无线调试后点「重新扫描」；首次连接需配对码。<span class="tip inline">?<span class="bub"><p>开启无线调试（ADB over Wi-Fi，TLS 加密通道）后点「重新扫描」：先探本网段，确认上次连过的设备还在不在，同时收设备广播，找到的列在下面。</p><p>点「连接」直连；点设备行本身只把 IP 和端口填到底部输入框，不发起连接。端口不对就点「找端口」，只扫这一台，不会去动别的设备。</p><p>首次连接要输配对码（无线调试页面上会显示）。配对密钥存在手机里，之后重开不用再输。连接端口由系统随机分配，每次变了本工具自己找回，不用你记。</p><p>扫不到设备或端口时，用最下面的手动输入连接。</p></span></span></div>
             <div class="wm" id="wifiScanMsg" style="margin:0 0 9px"></div>
             <button class="b2" id="btnFindStop" hidden style="margin:-3px 0 9px;padding:4px 10px">停止查找</button>
             <div id="wifiDevs">
@@ -310,8 +322,12 @@ button,select,input{font:inherit;color:inherit}
           <div class="fields"><div class="field"><label>显示器</label><select id="fMon"></select></div></div>
         </div>
         <div class="sec">
-          <div class="h"><b>画面档位</b><span>右侧按真实分辨率计算 · 放大不超过显示器尺寸，超出只增负担</span></div>
+          <div class="h"><b>画面档位</b><span>右侧按真实分辨率计算 · 放大不超过显示器尺寸，超出只增负担</span>
+            <span style="flex:1"></span>
+            <label class="chk"><input type="checkbox" id="chkHideUseless"> 收起无效档位</label>
+          </div>
           <div class="rows" id="tiers"></div>
+          <div class="desc" id="tiersNote" hidden></div>
         </div>
         <details class="disc">
           <summary><span class="chev">▶</span>更多参数</summary>
@@ -319,10 +335,13 @@ button,select,input{font:inherit;color:inherit}
             <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
             <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
             <div class="field"><label>窗口宽度（留空自动）</label><input id="fWinW" placeholder="如 720" maxlength="5" style="width:104px"></div>
+            <div class="field"><label>键盘<span class="tip inline">?<span class="bub"><p>想打中文，两条路：在手机上用自带输入法（默认的「系统注入」不会把手机输入法顶掉，点输入框就弹出来）；或者在电脑上复制、再到投屏窗口里按 Alt+V，把内容送进手机。</p><p>直接在电脑键盘上敲汉字，三种模式都上不去——投屏通道只认字母、数字和符号，汉字没有对应的键可发（实测系统自带的输入命令遇到汉字直接报错）。</p><p>「物理键盘」相当于给手机插了一把实体键盘，游戏按键更跟手，代价是手机输入法会被收起来。</p><p>「只看画面」不转发键盘：演示、看视频时不会误触；设备不接受键盘注入时也能用它先把画面看起来。</p><p>这里改了要关掉这一路重新开才生效。</p></span></span></label><select id="fKbd"><option value="sys">系统注入（推荐）</option><option value="hw">物理键盘（游戏按键）</option><option value="off">只看画面（不接管键盘）</option></select></div>
           </div>
-          <div class="wr" style="margin-top:12px;gap:18px">
+          <div class="wr" style="margin-top:12px;gap:18px;flex-wrap:wrap">
             <label class="chk"><input type="checkbox" id="chkTop"> 窗口置顶</label>
             <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（用 Alt+Q 关闭）</label>
+            <label class="chk"><input type="checkbox" id="chkLegacy"> 电脑内容粘不进手机时勾选</label>
+            <label class="chk"><input type="checkbox" id="chkKeepAwake"> 投屏期间不让设备息屏</label>
           </div>
         </details>
       </div>
@@ -331,7 +350,7 @@ button,select,input{font:inherit;color:inherit}
       <div class="page" id="pg-wins">
         <div class="sec">
           <div class="h"><button class="back" id="btnBackCast">‹ 返回投屏</button><b>应用投屏</b>
-            <span class="tip">?<span class="bub">每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排多个应用。电脑键鼠操作这块独立桌面，掌机按键/触屏不控制它。竖屏应用会把自己的窗口转成竖的（实测 B站、微信都会），横屏应用保持横屏；<b>每多开一个窗口，编码负担累加一份</b>。掌机的前端不会在第二块屏上画东西，那里会黑屏。</span></span>
+            <span class="tip">?<span class="bub"><p>每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排多个应用。</p><p>这块桌面由电脑键鼠操作，掌机自己的按键和触屏不控制它；电脑键盘默认走系统注入，输入法的键盘会弹在这块屏上，能直接打中文。想更跟手就在「投屏 → 更多参数 → 键盘」里改成物理键盘，改完要重开这一路。</p><p>竖屏应用会把自己的窗口转成竖的（实测 B站、微信都会），横屏应用保持横屏；<b>每多开一个窗口，编码负担累加一份</b>。</p><p>掌机的前端不会在第二块屏上画东西，那里会黑屏。</p></span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnVdClean">清理残留虚拟屏</button>
           </div>
@@ -350,7 +369,7 @@ button,select,input{font:inherit;color:inherit}
         </div>
         <div class="sec">
           <div class="h"><b>设备应用</b>
-            <span class="tip">?<span class="bub">点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块。列表读取设备已安装的应用，本地缓存增量解析；默认只显示第三方应用，勾选「显示系统应用」可包含系统应用。</span></span>
+            <span class="tip">?<span class="bub"><p>点「打开」把应用启动到虚拟屏；没有虚拟屏会自动先建一块。</p><p>列表读取设备已安装的应用，本地缓存增量解析；默认只显示第三方应用，勾选「显示系统应用」可包含系统应用。</p></span></span>
             <label class="chk"><input type="checkbox" id="chkShowSys"> 显示系统应用</label>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnAppsRefresh">刷新列表</button>
@@ -390,7 +409,7 @@ button,select,input{font:inherit;color:inherit}
         </div>
         <div class="sec">
           <div class="h"><b>插线一次转无线</b>
-            <span class="tip">?<span class="bub">手机用数据线连着时，直接通过 USB 读出它的局域网 IP 和监听端口，逐个试连；成功后地址记进常用地址簿，以后开机自动重连。<b>这条路完全不依赖 mDNS 广播</b>，扫描不工作的时候用它。</span></span>
+            <span class="tip">?<span class="bub"><p>手机用数据线连着时，直接通过 USB 读出它的局域网 IP 和监听端口，逐个试连；成功后地址记进常用地址簿，以后开机自动重连。</p><p><b>这条路完全不依赖 mDNS 广播</b>，扫描不工作的时候用它。</p></span></span>
           </div>
           <div class="wm" id="u2wMsg"></div>
           <div class="rows" id="u2wBox"></div>
@@ -451,9 +470,11 @@ button,select,input{font:inherit;color:inherit}
         <span>旋转画面</span><kbd>Alt+← / →</kbd>
         <span>音量</span><kbd>Alt+↑ / ↓</kbd>
         <span>电源键</span><kbd>Alt+P</kbd>
+        <span>粘贴到手机</span><kbd>Alt+V</kbd>
+        <span>让手机复制</span><kbd>Alt+C</kbd>
         <span>退出投屏</span><kbd>Alt+Q</kbd>
       </div>
-      <p class="kt">鼠标右键是返回，中键是主页，第四键是最近任务。这些键在投屏窗口上按才生效。</p>
+      <p class="kt">鼠标右键是返回，中键是主页，第四键是最近任务。这些键在投屏窗口上按才生效。打不进中文时：电脑上照常复制，到投屏窗口里按 Alt+V，它会把电脑上的内容送到手机再粘贴（安卓 7 以上）；还是粘不进就在「更多参数」里勾上「电脑内容粘不进手机时勾选」。</p>
     </div>
     <div class="ab-sep"></div>
     <div class="ab-don">
@@ -489,6 +510,10 @@ window.__cb = (id, result) => { const f = __pend[id]; if (f) { delete __pend[id]
 // 投屏窗口的显示选项，跟着每次启动传下去；放大档固定全屏，不参与
 function winOpts(forWindowed) {
   const o = { monIndex: String(monIdx) };
+  // 键盘通道和粘贴方式跟场景无关，先挂上，别让全屏那条提前 return 漏掉
+  const kb = $('fKbd'); o.kbd = kb ? kb.value : 'sys';
+  if ($('chkLegacy') && $('chkLegacy').checked) o.legacyPaste = '1';
+  if ($('chkKeepAwake') && !$('chkKeepAwake').checked) o.keepActive = '0';
   if (forWindowed === false) return o;   // 全屏时不给窗口尺寸/边框参数，交给 scrcpy 铺满目标屏
   if ($('chkTop') && $('chkTop').checked) o.alwaysOnTop = '1';
   if ($('chkBorderless') && $('chkBorderless').checked) o.borderless = '1';
@@ -522,6 +547,8 @@ const api = {
   appIcon: (id, pkg) => call('app-icon', { id, pkg }),
   appsLaunch: (o) => call('apps-launch', Object.assign({}, o, winOpts())),
   restore: (id) => call('restore', { id }),
+  kbdProbe: (id) => call('kbd-probe', { id }),
+  kbdHardKeys: (id) => call('kbd-hardkb-settings', { id }),
   toWireless: (id) => call('to-wireless', { id }),
   toWired: (id) => call('to-wired', { id }),
   discover: () => call('wifi-discover'),
@@ -578,14 +605,18 @@ function tiersFor(d) {
     // 镜像只缩不放：屏幕装不下才缩，小画面保持原尺寸。scrcpy 不会把低分辨率放大
     const k = Math.min(1, mon.w / cw, mon.h / ch);
     const s = [Math.round(cw * k), Math.round(ch * k)];
+    // 显示器把画面压小了，就该醒目提示：这一档没按设备真实分辨率出图
+    const capNote = `由于显示器分辨率（${mon.w}×${mon.h}）限制，实际未能按设备 ${cw}×${ch} 投屏，只输出 ${s[0]}×${s[1]}。`;
     out.push({ nm: '原始分辨率', ds: `按设备当前 ${cw}×${ch} 点对点输出，不缩放不放大`, size: s, px: 1, cost: '无增加', cls: '',
+      raw: true, warn: k < 1,
       tip: k < 1
-        ? `设备当前 ${cw}×${ch}，比显示器高，窗口会等比缩到 ${s[0]}×${s[1]}。像素来自设备，不插值。要更大得用「高清渲染」。`
-        : `设备当前 ${cw}×${ch}，按原尺寸开窗，一个像素对一个像素，不放大。想填满屏幕用「高清渲染」。`,
+        ? `<p>${capNote}</p><p>像素来自设备，不插值。要更大得用「高清渲染」。</p>`
+        : `<p>设备当前 ${cw}×${ch}，按原尺寸开窗，一个像素对一个像素，不放大。</p><p>想填满屏幕用「高清渲染」。</p>`,
       run: () => api.launchMirror({ id: d.id, fullscreen: false, size: s[0] + '×' + s[1], bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: '仅镜像（默认参数）' });
     out.push({ nm: '全屏显示', ds: '隐藏窗口边框铺满屏幕，按 Alt+F 随时切换', size: s, px: 1, cost: '无增加', cls: '',
-      tip: '全屏只是去掉边框，画面像素不变，<b>不会更清楚</b>。要更清楚用「高清渲染」。',
+      raw: true, warn: k < 1,
+      tip: (k < 1 ? `<p>${capNote}</p>` : '') + '<p>全屏只是去掉边框，画面像素不变，<b>不会更清楚</b>。要更清楚用「高清渲染」。</p>',
       run: () => api.launchMirror({ id: d.id, fullscreen: true, size: s[0] + '×' + s[1], bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: '--fullscreen' });
     return out;
@@ -599,13 +630,16 @@ function tiersFor(d) {
       const s = showW(w, h);
       // 重绘分辨率已覆盖显示器（宽高都不小于显示器）→ 窗口不会再变大，继续放大纯浪费
       const over = w >= mon.w && h >= mon.h;
+      // 重绘尺寸比显示器能给的还大：窗口被压小，这档也没按重绘尺寸铺满
+      const clamp = !over && s[0] < w;
       return Object.assign({ nm,
         ds: over ? '已达显示器上限 ' + mon.w + '×' + mon.h : '像素量 ' + (k * k).toFixed(2) + ' 倍',
         size: s, px: k * k,
         cost: over ? '不再增加' : (k <= 1 ? '无增加' : k < 1.8 ? '中等负载' : '高负载'),
         cls: over ? '' : (k <= 1 ? '' : k < 1.8 ? 'hi' : 'no'),
-        off: over,
-        tip: over ? `重绘 ${w}×${h} 已超过显示器 ${mon.w}×${mon.h}，窗口不会更大，再放大只增加设备负担，已停用。` : undefined,
+        off: over, warn: clamp, ra: w * h,
+        tip: over ? `重绘 ${w}×${h} 已超过显示器 ${mon.w}×${mon.h}，窗口不会更大，再放大只增加设备负担，已停用。`
+             : (clamp ? `由于显示器分辨率（${mon.w}×${mon.h}）限制，重绘的 ${w}×${h} 只铺到 ${s[0]}×${s[1]}，没铺满显示器。` : undefined),
         run: () => api.launchScaled({ id: d.id, kind: 'factor', factor: k, monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
         cmd: 'wm size ' + w + 'x' + h + ' · wm density ' + Math.round(dpi * k) }, extra || {});
     };
@@ -615,13 +649,14 @@ function tiersFor(d) {
     const kFit = Math.min(mon.w / bw, mon.h / bh);
     out.push({ nm: '等比最大化', ds: '保持设备比例放大到显示器边界，不变形', size: showW(Math.round(bw * kFit), Math.round(bh * kFit)),
       px: kFit * kFit, cost: kFit <= 1 ? '无增加' : '中等负载', cls: kFit <= 1 ? '' : 'hi',
-      tip: `取宽、高两个方向较小的比值 ${kFit.toFixed(2)}，保证不变形又能撑到屏幕边界。换更大显示器会自动提高。`,
+      ra: Math.round(bw * kFit) * Math.round(bh * kFit),
+      tip: `<p>取宽、高两个方向较小的比值 ${kFit.toFixed(2)}，保证不变形又能撑到屏幕边界。</p><p>换更大显示器会自动提高。</p>`,
       run: () => api.launchScaled({ id: d.id, kind: 'fit', monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: 'wm size ' + Math.round(bw * kFit) + 'x' + Math.round(bh * kFit) });
     const fillPx = (mon.w * mon.h) / (pw * ph);
-    out.push({ nm: '满屏填充', ds: '把设备分辨率改成显示器分辨率，画面铺满无黑边', size: [mon.w, mon.h], px: fillPx,
+    out.push({ nm: '满屏填充', ds: '把设备分辨率改成显示器分辨率，画面铺满无黑边', size: [mon.w, mon.h], px: fillPx, ra: mon.w * mon.h,
       cost: fillPx > 1.6 ? '高负载' : '略降', cls: fillPx > 1.6 ? 'hi' : '',
-      tip: `画面改成 ${mon.w}×${mon.h} 比例，铺满无黑边。<b>设备自己那块屏会显示异常</b>；部分设备不接受这个尺寸（掌机实测最宽只到物理屏两倍），启动后按实际接受值显示。改档位前请先关掉正在用的应用。`,
+      tip: `<p>画面改成 ${mon.w}×${mon.h} 比例，铺满无黑边。</p><p><b>设备自己那块屏会显示异常</b>；部分设备不接受这个尺寸（掌机实测最宽只到物理屏两倍），启动后按实际接受值显示。</p><p>改档位前请先关掉正在用的应用。</p>`,
       run: () => api.launchScaled({ id: d.id, kind: 'fill', monW: mon.w, monH: mon.h, bitrate: $('fBitrate').value, fps: $('fFps').value }),
       cmd: 'wm size ' + mon.w + 'x' + mon.h + ' · --fullscreen' });
     if (isPad) out.forEach(t => { if (t.nm === '1.0× 重绘') t.dim = true; });
@@ -629,10 +664,30 @@ function tiersFor(d) {
   }
   return [];
 }
-function at() { const l = tiersFor(cur()); if (tier >= l.length) tier = 0; return l[tier]; }
+// 「收起无效档位」：窗口被显示器封顶、只多花设备负载的档位，默认不摆在眼前
+let hideUseless = localStorage.getItem('syrHideUseless') !== '0';
+let tierRemember = null;
+function useless(l, t) {
+  if (t.raw || !hideUseless) return false;
+  if (t.off) return true;                             // 已达显示器上限，本来就停用
+  const i = l.indexOf(t);
+  if (i === l.findIndex(x => !x.raw)) return false;   // 第一档留底，别让人以为功能没了
+  const a = t.size[0] * t.size[1];
+  // 有另一档窗口不比它小、负载还不比它高 → 这一档只是多花钱不办事
+  return l.some(b => b !== t && !b.raw && !b.off
+    && b.size[0] * b.size[1] >= a * 0.995 && b.ra <= t.ra * 1.02);
+}
+function visIdx(l) { const v = []; for (let i = 0; i < l.length; i++) if (!useless(l, l[i])) v.push(i); return v; }
+// 只在"当前选中的档被收起"时才动 tier，否则每 6 秒的后台轮询会把用户选择冲掉
+function normTier() {
+  const l = tiersFor(cur()), v = visIdx(l);
+  if (!v.length) return;
+  if (v.indexOf(tier) < 0) { tierRemember = tier < l.length ? tier : null; tier = v[0]; }
+}
+function at() { const l = tiersFor(cur()); normTier(); if (tier >= l.length) tier = 0; return l[tier]; }
 function modeDesc() {
   return { mirror: '设备屏幕原样投出，一个窗口。兼容性最好，所有设备都支持。',
-    scale: '让设备以更高分辨率重绘画面，同样窗口里更清晰，代价是设备负载明显增加。设备横屏时自动按横屏方向放大。会临时修改设备的渲染分辨率；结束投屏后若没有自动恢复，到「显示还原」页点「还原」即可。' }[mode];
+    scale: '<p>让设备以更高分辨率重绘画面，同样窗口里更清晰，代价是设备负载明显增加。设备横屏时自动按横屏方向放大。</p><p>会临时修改设备的渲染分辨率；结束投屏后若没有自动恢复，到「显示还原」页点「还原」即可。</p>' }[mode];
 }
 
 function renderTop() {
@@ -666,7 +721,8 @@ function renderDevs() {
   // 再点一次已选中的设备就取消选择：否则选过一次之后再也回不到「未选」状态
   [].forEach.call($('devs').querySelectorAll('.row'), r => r.onclick = () => {
     devId = devId === r.dataset.id ? null : r.dataset.id;
-    tier = 0; renderAll();
+    tier = 0; tierRemember = null; renderAll();
+    if (devId) probeKbd(devId);
   });
   [].forEach.call($('devs').querySelectorAll('button[data-dis]'), b => b.onclick = (e) => { e.stopPropagation(); wifiDisconnect(b.dataset.dis); });
   const ea = $('devs').querySelector('.empty .act'); if (ea) ea.onclick = () => refresh();
@@ -683,21 +739,29 @@ function renderSeg() {
       if (!cur()) return toast('先在上方选一台设备', true);
       return switchPage('wins');
     }
-    mode = b.dataset.k; tier = 0; renderAll();
+    mode = b.dataset.k; tier = 0; tierRemember = null; renderAll();
   });
   const short = { mirror: '原样镜像，兼容性最好', scale: '更高分辨率重绘，会临时改设备分辨率', multi: '每个应用一块屏，可并排' }[mode];
   $('segDesc').innerHTML = '<span class="tip inline">?<span class="bub">' + modeDesc() + '</span></span>' + short;
 }
 function renderTiers() {
   const l = tiersFor(cur());
-  $('tiers').innerHTML = l.length ? l.map((t, i) =>
-    `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''} ${t.off ? 'off' : ''}" data-i="${i}"${t.off ? ' data-off="1"' : ''}>
+  normTier();   // 先归位，否则当前档被收起时列表里没有高亮行（renderOut 在后面才跑）
+  const v = visIdx(l);
+  $('tiers').innerHTML = l.length ? v.map(i => {
+    const t = l[i];
+    return `<div class="row tier ${i === tier ? 'on' : ''} ${t.dim ? 'dim' : ''} ${t.off ? 'off' : ''}" data-i="${i}"${t.off ? ' data-off="1"' : ''}>
       <span class="rd"></span><div><div class="nm">${esc(t.nm)}</div><div class="mt">${esc(t.ds)}</div></div>
       <span class="sp"></span><span class="size">${t.size[0]}×${t.size[1]}</span>
       <span class="pill ${t.cls}">${esc(t.cost)}</span>
-      ${t.tip ? '<span class="tip">?<span class="bub">' + t.tip + '</span></span>' : ''}</div>`).join('')
-    : '<div class="empty">先选一台设备。</div>';
-  [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { if (x.dataset.off === '1') return; tier = +x.dataset.i; renderAll(); });
+      ${t.tip ? `<span class="tip${t.warn ? ' warn' : ''}">${t.warn ? '!' : '?'}<span class="bub">${t.tip}</span></span>` : ''}</div>`;
+  }).join('') : '<div class="empty">先选一台设备。</div>';
+  // 收起来的档位要说一声，不然会被当成软件少了功能
+  const note = $('tiersNote'), hidden = l.length - v.length;
+  note.hidden = hidden <= 0;
+  if (hidden > 0)
+    note.innerHTML = `已收起 ${hidden} 个不会让画面更大的档位<span class="tip inline">?<span class="bub"><p>这些档位被 ${mon.w}×${mon.h} 的显示器封顶，窗口和留下的档位一样大，只是多花设备负载。</p><p>关掉「收起无效档位」就能全部看到。</p></span></span>`;
+  [].forEach.call($('tiers').querySelectorAll('.tier'), x => x.onclick = () => { if (x.dataset.off === '1') return; tier = +x.dataset.i; tierRemember = null; renderAll(); });
 }
 function renderOut() {
   const t = at(), live = !!(t && t.size && t.size[0]);
@@ -717,7 +781,7 @@ function renderOut() {
   $('vCost').className = 'v ' + (t ? (t.cls === 'no' ? 'no' : t.cls === 'hi' ? 'hi' : 'ok') : '');
   const call = $('call');
   call.innerHTML = t
-    ? '<span class="tip">?<span class="bub">' + (t.tip || '当前档位的详细说明。') + '</span></span><b>' + esc(t.nm) + '</b><span style="opacity:.85"> · ' + esc(t.cost || '') + '</span>'
+    ? `<span class="tip${t.warn ? ' warn' : ''}">${t.warn ? '!' : '?'}<span class="bub">${t.tip || '当前档位的详细说明。'}</span></span><b>` + esc(t.nm) + '</b><span style="opacity:.85"> · ' + esc(t.cost || '') + '</span>'
     : '<span class="tip">?<span class="bub">选一台设备，选好投屏方式与档位，点下方「开始投屏」。</span></span>选一台设备开始。';
   call.className = 'call ' + (t ? (t.cls === 'no' ? 'bad' : t.cls === 'hi' ? 'warn' : '') : '');
   $('cmd').innerHTML = '$ scrcpy ' + (t ? '<em>' + esc(t.cmd) + '</em>' : '');
@@ -771,7 +835,7 @@ async function renderWins() {
   }
   box.innerHTML = '<div class="ch">正在投屏</div>' + arr.map(x =>
     `<div class="cast"><div><div class="cn">${esc(x.deviceName || x.deviceId)}</div>
-      <div class="cm">${esc(x.mode)} · ${esc(x.size || '—')} · ${esc(x.startedAt)}</div></div>
+      <div class="cm">${esc(x.mode)} · ${esc(x.size || '—')} · ${esc(x.startedAt)}${x.kbd === 'hw' ? ' · 物理键盘' : ''}</div></div>
       <span class="sp"></span><button class="b2" data-pid="${x.pid}">关闭</button></div>`).join('');
   [].forEach.call(box.querySelectorAll('button[data-pid]'), b => b.onclick = async () => {
     b.disabled = true;
@@ -825,7 +889,8 @@ async function renderDiag() {
   rows.push(diagRow('网', '本机局域网地址', ips.length ? ips.map(x => esc(x.ip) + '（' + esc(x.nic) + '）').join('、') : '没拿到可用的 IPv4 地址，检查网线/WiFi', !!ips.length));
   let md;
   if (r.mdnsVerdict === 'shared') md = '5353 有其他程序共用（Windows 系统、浏览器等），这是正常现象；共用不阻塞扫描。若设备开着无线调试仍收不到广播，再重启 adb 服务';
-  else if (r.mdnsVerdict === 'silent') md = 'adb 在用 5353，但<b>一条广播都没收到</b>：多半是这个网络（公司/访客 WiFi）不转发 mDNS 组播，不是手机的问题。地址簿、端口定位、插线转无线都不依赖广播';
+  else if (r.mdnsVerdict === 'wifiOff') md = '连着数据线的设备<b>没有开「无线调试」</b>：它现在不监听任何无线端口，所以也不会有广播。去手机上打开「无线调试」，再点「重新扫描」。地址簿、端口定位、插线转无线都不依赖广播';
+  else if (r.mdnsVerdict === 'silent') md = 'adb 在用 5353，但<b>一条广播都没收到</b>：设备那边可能没开无线调试，也可能是这个网络（公司/访客 WiFi）不转发 mDNS 组播。地址簿、端口定位、插线转无线都不依赖广播';
   else if (r.mdnsVerdict === 'ok') md = 'adb 正常使用 5353，能收到设备广播';
   else md = '5353 空着，adb 可以自己收广播';
   rows.push(diagRow('端', 'mDNS 端口 5353', md, r.mdnsVerdict === 'free' || r.mdnsVerdict === 'ok' || r.mdnsVerdict === 'shared'));
@@ -1040,6 +1105,7 @@ function switchPage(k) {
   if (k === 'diag') renderDiag();
   if (k === 'cast') paintU2W();
 }
+let lastPendingRestore = '';
 async function refresh() {
   const r = await api.scan();
   if (r.error) { $('devs').innerHTML = '<div class="empty">' + esc(r.error) + '</div>'; return; }
@@ -1051,8 +1117,17 @@ async function refresh() {
   const gone = prev.filter(p => p.via === 'wireless' && !devs.some(d => d.id === p.id));
   const wasSel = devId && !devs.some(d => d.id === devId);
   if (devId && !devs.find(d => d.id === devId)) devId = null; // 不自动选中，由用户点击设备卡片选择
-  // 这里只兜底越界：后台每几秒刷一次设备列表，不能把用户选的档位（比如「满屏填充」）冲回第一项
-  if (tier >= tiersFor(cur()).length) tier = 0;
+  // 这里只兜底越界和被收起：后台每几秒刷一次设备列表，不能把用户选的档位冲回第一项
+  if (tier >= tiersFor(cur()).length) tier = 0; else normTier();
+  // 断开时没还原成功：设备回来后后台会自动补；一直没回来就提醒一次，指出两条路
+  if (r.restorePending) {
+    if (lastPendingRestore !== r.restorePending) {
+      lastPendingRestore = r.restorePending;
+      toast('有台设备的分辨率没还原成功（' + r.restorePending + '）：它断开时没连上。等它重新连上会自动补还原，也可以插线后在「显示还原」页手动点还原。', true);
+    }
+  } else lastPendingRestore = '';
+  // 后台事件（自动重连之类）没地方推，扫描时捎带回来，弹一次
+  if (r.notice) toast(r.notice);
   renderAll(); renderConn(); renderWins();
   if (wasSel && gone.length) toast('设备已断开：' + (gone[0].name || gone[0].id), true);
   maybeAutoReconnect();
@@ -1141,9 +1216,15 @@ function wifiRowHtml(f) {
   else if (reason === 'moved') tagText = 'IP 变了';
   else if (f.state === 'idle') { tagText = '端口可用'; tagOk = true; }
   else if (reason === 'auth') tagText = '需重新配对';
-  else tagText = '端口变了';
-  const tag = tagText ? `<span class="tag${tagOk ? ' ok' : ' no'}">${tagText}</span>` : '';
-  const tip = f.note ? ` title="${esc(f.note)}"` : '';
+  else if (reason === 'notadb') tagText = '端口不是无线调试';
+  else tagText = '端口不通';
+  // 出问题的状态用红标签，原因收进气泡，悬停或点标签看
+  const isErr = /^(端口不通|端口不是无线调试|机器没回应|IP 被占用|需重新配对|连不上)$/.test(tagText);
+  const tag = tagText
+    ? `<span class="tag${tagOk ? ' ok' : (isErr ? ' bad tip' : ' no')}">${tagText}${isErr && f.note ? `<span class="bub">${f.note}</span>` : ''}</span>`
+    : '';
+  // 异常状态的原因挂在红标签上（悬停/点击看），正常行的说明仍用行尾提示
+  const tip = f.note && !isErr ? ` title="${esc(f.note)}"` : '';
   // 没回应/地址被占用的按身份找回；在线的端口不对就只扫这一台的端口
   const findLabel = (f.state === 'gone') ? '找回这台' : '找端口';
   const needFind = isKnown && (f.state === 'gone' || f.state === 'fail');
@@ -1154,8 +1235,8 @@ function wifiRowHtml(f) {
   const forget = isKnown
     ? `<button class="b2" data-act="forget" data-addr="${esc(f.bookAddr || addr)}">忘记</button>` : '';
   return `<div class="row" data-addr="${esc(addr)}" data-kind="${esc(f.kind)}" data-name="${esc(nm)}"><span class="ic">${IC.wifi}</span>
-      <div class="wmain"${tip}><div class="nm">${esc(nm)}</div>${sub}</div>
-      <div class="acts">${tag}${reloc}${con}${forget}</div></div>`;
+      <div class="wmain"${tip}><div class="nm">${esc(nm)}${tag}</div>${sub}</div>
+      <div class="acts">${reloc}${con}${forget}</div></div>`;
 }
 // 一台在线的都没有时的占位：只说明，不挂任何入口
 const WIFI_SCAN_EMPTY = '<div class="ph"><span>这次没扫到在线的设备，广播里也没有。确认手机和电脑在同一个网络、屏幕已点亮；也可以在最下面直接填 IP 和端口。</span></div>';
@@ -1183,7 +1264,7 @@ function bindWifiList() {
   // 点行本身只把地址填到底部输入框，不发起连接；要连还是点行内「连接」
   [].forEach.call($('wifiDevs').querySelectorAll('.row'), r => {
     r.onclick = e => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button') || e.target.closest('.tip')) return;
       fillWifiAddr(r.dataset.addr, r.dataset.kind, r.dataset.name);
     };
   });
@@ -1405,7 +1486,40 @@ $('fVd').onchange = () => {
   top.onchange = () => localStorage.setItem('syrTop', top.checked ? '1' : '0');
   bd.onchange = () => localStorage.setItem('syrBorderless', bd.checked ? '1' : '0');
   w.onchange = () => localStorage.setItem('syrWinW', w.value.trim());
+  const lp = $('chkLegacy'), kb = $('fKbd');
+  lp.checked = localStorage.getItem('syrLegacyPaste') === '1';
+  lp.onchange = () => localStorage.setItem('syrLegacyPaste', lp.checked ? '1' : '0');
+  const ka = $('chkKeepAwake');
+  ka.checked = localStorage.getItem('syrKeepAwake') !== '0';
+  ka.onchange = () => localStorage.setItem('syrKeepAwake', ka.checked ? '1' : '0');
+  kb.value = localStorage.getItem('syrKbd') || 'sys';
+  kb.onchange = () => {
+    localStorage.setItem('syrKbd', kb.value);
+    if (kb.value === 'hw' && kbdUhid === false)
+      toast('这台设备没有物理键盘通道，按键可能没反应；要打中文改回「系统注入」，或在电脑上复制后到投屏窗口里按 Alt+V。', true);
+  };
+  const hu = $('chkHideUseless');
+  hu.checked = hideUseless;
+  hu.onchange = () => {
+    hideUseless = hu.checked;
+    localStorage.setItem('syrHideUseless', hideUseless ? '1' : '0');
+    // 展开时把用户原本选中的那一档还回去
+    if (!hideUseless && tierRemember != null && tierRemember < tiersFor(cur()).length) tier = tierRemember;
+    tierRemember = null;
+    renderAll();
+  };
 })();
+// 物理键盘通道不是每台设备都有：选中设备后探一次，选项上直接标出来，别让人试半天
+let kbdUhid = null;
+async function probeKbd(id) {
+  try {
+    const r = await api.kbdProbe(id);
+    if (!r || !r.ok) return;
+    kbdUhid = !!r.uhid;
+    const hw = $('fKbd') && $('fKbd').querySelector('option[value="hw"]');
+    if (hw) hw.textContent = kbdUhid ? '物理键盘（游戏按键）' : '物理键盘（这台设备不支持）';
+  } catch (e) { }
+}
 $('chkAutoRe').checked = localStorage.getItem('syrAutoRe') !== '0';
 $('chkAutoRe').onchange = () => localStorage.setItem('syrAutoRe', $('chkAutoRe').checked ? '1' : '0');
 $('fBitrate').onchange = renderOut; $('fFps').onchange = renderOut;
