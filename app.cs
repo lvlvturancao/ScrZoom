@@ -79,6 +79,7 @@ public class MainForm : Form
     string PendingFile { get { return Path.Combine(DataDir, "restore-pending.json"); } }
     string CapFile { get { return Path.Combine(DataDir, "device-capabilities.json"); } }
     string BaselineFile { get { return Path.Combine(DataDir, "dpi-baselines.json"); } }
+    string AppliedFile { get { return Path.Combine(DataDir, "applied-display.json"); } }
 
     // ── 高 DPI 换算 ──
     // 进程声明了 PerMonitorV2（见 app.manifest）之后，WinForms 里的数字就是物理像素。
@@ -166,12 +167,64 @@ public class MainForm : Form
         public DateTime startedAtDt;             // 用来判断这一路活了多久
         public int retryGen;                     // 连续自动重连次数（活久了会归零）
         public Func<Task<object>> retry;         // 异常退出时用原参数再来一次
+        public List<string> argv;                // 启动时用的完整参数：重连照着原样再起一次，不重算档位
+        // 掉线追踪：投屏期间在本机一侧持续记心跳，掉线时直接取最后几分钟，不用等设备回来
+        public List<string> netTrace = new List<string>();
+        public List<string> pingTrace = new List<string>();
+        public object traceLock = new object();
+        public string lastNetSig = "";
+        public CancellationTokenSource traceCts;
     }
     // 给界面的一次性提示（自动重连这类后台事件没地方推，扫描时捎带回去）
     static string uiNotice = "";
     static readonly List<CastSession> Sessions = new List<CastSession>();
     static readonly object SessionLock = new object();
     CastSession lastSpawned;
+
+    // 设备信息短缓存：投屏期间不再对同一台设备并发跑 shell 查询，列表靠上一次的结果撑住
+    readonly Dictionary<string, Dictionary<string, object>> devInfoCache = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, DateTime> devInfoCacheAt = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+    readonly object devInfoCacheLock = new object();
+
+    Dictionary<string, object> DevInfoCached(string id)
+    {
+        lock (devInfoCacheLock) { Dictionary<string, object> d; return devInfoCache.TryGetValue(id, out d) ? d : null; }
+    }
+
+    bool DevInfoFresh(string id, int seconds)
+    {
+        lock (devInfoCacheLock)
+        {
+            DateTime t;
+            return devInfoCacheAt.TryGetValue(id, out t) && (DateTime.Now - t).TotalSeconds < seconds;
+        }
+    }
+
+    void DevInfoStore(string id, Dictionary<string, object> d)
+    {
+        lock (devInfoCacheLock) { devInfoCache[id] = d; devInfoCacheAt[id] = DateTime.Now; }
+    }
+
+    // 刚启动就投屏、还没扫过这台：用之前记下的分辨率快照把列表项补齐，别为了显示信息去挤通道
+    Dictionary<string, object> CachedFromBaseline(string id, string modelName)
+    {
+        var bl = BaselineFor(id);
+        string size = "", dpi = "", phys = "", physDpi = "", ov = "", ovDpi = "";
+        if (bl != null)
+        {
+            size = Tv(bl, "size"); dpi = Tv(bl, "dpi"); phys = Tv(bl, "physSize"); physDpi = Tv(bl, "physDpi");
+            ov = Tv(bl, "ovSize"); ovDpi = Tv(bl, "ovDpi");
+        }
+        string shown = LookupName(LoadNames(), "", id);
+        if (shown.Length == 0) shown = modelName;
+        return new Dictionary<string, object> {
+            { "id", id }, { "name", shown }, { "android", "" },
+            { "via", id.Contains(":") ? "wireless" : "usb" }, { "rot", "0" },
+            { "physicalSize", phys }, { "physicalDpi", physDpi.Length > 0 ? physDpi : "0" },
+            { "currentSize", ov.Length > 0 ? ov : size }, { "currentDpi", ovDpi.Length > 0 ? ovDpi : dpi },
+            { "hadSizeOverride", ov.Length > 0 }, { "hadDpiOverride", ovDpi.Length > 0 }
+        };
+    }
 
     bool RestoreOnClose()
     {
@@ -407,6 +460,8 @@ public class MainForm : Form
             target = hit;
             Log("待还原的设备换了地址：" + id + " → " + target);
         }
+        // 正在投屏就先别动：等这一路关了再补，别把正在跑的应用的分辨率拽来拽去
+        if (HasLiveSession(target)) return;
         var r = await Restore(new Dictionary<string, object> { { "id", target } });
         var d = r as Dictionary<string, object>;
         if (d != null && d.ContainsKey("error")) Log("重连后补还原未完成: " + d["error"]);
@@ -561,8 +616,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.4.0";
-    public const int AppVersionCode = 7;
+    public const string AppVersion = "0.5.0";
+    public const int AppVersionCode = 8;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -828,6 +883,7 @@ public class MainForm : Form
             case "save-reward-qr": return SaveRewardQr();
             case "open-url": return OpenUrl(p);
             case "restore": return await Restore(p);
+            case "restore-default": return await RestoreDefault(p);
             case "to-wireless": return await ToWireless(p);
             case "to-wired": return await ToWired(p);
             case "wifi-discover": return await WifiDiscover();
@@ -891,18 +947,40 @@ public class MainForm : Form
     {
         if (adbExe == null) return;
         int pid = Port5037Pid();
-        if (pid <= 0) return;   // 没有服务，第一次调 adb 时会自己起
+        if (pid <= 0)
+        {
+            // 没有服务就先起好，顺手提一下优先级，别等第一次查询时才起
+            RunRaw(adbExe, new[] { "start-server" }, 15000);
+            BoostServer(Port5037Pid());
+            return;
+        }
         string owner = "";
         try { owner = Process.GetProcessById(pid).MainModule.FileName; } catch { }
         if (owner.Length == 0) { Log("adb 5037 占用者读不到路径，跳过检查 pid=" + pid); return; }
-        if (string.Equals(owner, adbExe, StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(owner, adbExe, StringComparison.OrdinalIgnoreCase)) { BoostServer(pid); return; }
         Log("adb 服务被别的程序占着：" + owner + "（pid " + pid + "），换成自带的");
         RunRaw(adbExe, new[] { "kill-server" }, 8000);
         RunRaw(adbExe, new[] { "start-server" }, 15000);
         int pid2 = Port5037Pid();
         string owner2 = "";
         try { if (pid2 > 0) owner2 = Process.GetProcessById(pid2).MainModule.FileName; } catch { }
+        BoostServer(pid2);
         Log("adb 服务已切换，现在 5037 占用者=" + (owner2.Length > 0 ? owner2 : "未知") + "（pid " + pid2 + "）");
+    }
+
+    // 本机的 adb 服务和投屏进程都往上提半档优先级：它们要持续从手机读数据，
+    // 本机一忙、读得慢一拍，手机的发送缓冲就会憋满，设备端写失败后整条连接会被关掉。
+    // 只提 AboveNormal，不碰实时优先级，避免反过来抢系统资源。
+    static void BoostServer(int pid)
+    {
+        if (pid <= 0) return;
+        try
+        {
+            var p = Process.GetProcessById(pid);
+            if (p.PriorityClass != ProcessPriorityClass.AboveNormal)
+                p.PriorityClass = ProcessPriorityClass.AboveNormal;
+        }
+        catch { }
     }
 
     static int Port5037Pid()
@@ -986,25 +1064,65 @@ public class MainForm : Form
         });
     }
 
-    // 投屏异常退出时自动重连一次：把这次启动的入参留一份，带 noRetry 标记再调同一个启动函数。
-    // 只重试一次，避免端口/网络彻底不通时无限循环；用户主动关掉的（intentional）不重连。
+    // 投屏异常退出时自动重连：把这次启动的入参留一份，带 retryGen 标记再调同一个启动函数。
+    // 次数在真正掉线那一刻判断——这一路活过 90 秒说明链路本来能用，次数归零重计；
+    // 连续三次都没撑住就停下，交给用户判断是网络问题还是该换数据线。
     void ArmRetry(Dictionary<string, object> p, Func<Dictionary<string, object>, Task<object>> launcher)
     {
         var sess = lastSpawned;
         if (sess == null) return;
-        int gen = 0;
-        int.TryParse(Ps(p, "retryGen", "0"), out gen);
-        // 这一路活过 90 秒再掉，说明链路本来能用，重试次数重新计
-        if ((DateTime.Now - sess.startedAtDt).TotalSeconds >= 90) gen = 0;
-        if (gen >= 3)
+        sess.retry = () =>
         {
-            uiNotice = "这台设备反复掉线（已自动重连 3 次），先停下来，检查网络或改用数据线";
-            Log("自动重连次数用尽 " + sess.deviceId);
-            return;
+            int gen = sess.retryGen;
+            if ((DateTime.Now - sess.startedAtDt).TotalSeconds >= 90) gen = 0;
+            if (gen >= 3)
+            {
+                uiNotice = "这台设备反复掉线（已自动重连 3 次），先停下来，检查网络或改用数据线；设备分辨率保持原样，需要还原到「显示还原」页";
+                Log("自动重连次数用尽 " + sess.deviceId);
+                return Task.FromResult<object>(Err("自动重连次数用尽"));
+            }
+            var q = new Dictionary<string, object>(p);
+            q["retryGen"] = (gen + 1).ToString();
+            return launcher(q);
+        };
+    }
+
+    // 改过分辨率的那一路（放大）重连时不能再走一遍启动流程：
+    // 那会先把设备分辨率还原、再设回目标值，正在跑的游戏会被迫重新布局，严重的直接崩。
+    // 这里照抄启动时的完整参数再起一个 scrcpy，设备侧保持掉线前的样子。
+    void ArmRespawn(CastSession sess)
+    {
+        if (sess == null) return;
+        sess.retry = () =>
+        {
+            int gen = sess.retryGen;
+            if ((DateTime.Now - sess.startedAtDt).TotalSeconds >= 90) gen = 0;
+            if (gen >= 3)
+            {
+                uiNotice = "这台设备反复掉线（已自动重连 3 次），先停下来，检查网络或改用数据线；设备分辨率保持原样，需要还原到「显示还原」页";
+                Log("自动重连次数用尽 " + sess.deviceId);
+                return Task.FromResult<object>(Err("自动重连次数用尽"));
+            }
+            return Task.FromResult<object>(RespawnExact(sess, gen + 1));
+        };
+    }
+
+    object RespawnExact(CastSession old, int gen)
+    {
+        if (old.argv == null || old.argv.Count == 0) return Err("没有可用的启动参数，请手动重新投屏");
+        var res = Spawn(new List<string>(old.argv), old.deviceId, old.mode, old.size, old.scaled, old.appPkg, gen);
+        var d = res as Dictionary<string, object>;
+        if (d != null && !d.ContainsKey("error"))
+        {
+            var ns = lastSpawned;
+            if (ns != null)
+            {
+                ns.deviceName = old.deviceName;
+                Log("自动重连：沿用原参数重启 " + old.deviceId + "（第 " + gen + " 次）");
+                ArmRespawn(ns);
+            }
         }
-        var p2 = new Dictionary<string, object>(p);
-        p2["retryGen"] = (gen + 1).ToString();
-        sess.retry = () => launcher(p2);
+        return res;
     }
 
     // 无线投屏最容易死在一个地方：设备自己息屏休眠，Wi-Fi 跟着掉，连接就断。
@@ -1119,6 +1237,25 @@ public class MainForm : Form
         // 每台设备的几条查询同时发，逐台串行会让首屏等上十几秒
         var probes = ids.Select(async id =>
         {
+            string modelName = RegexVal(r.text, "(?m)^" + System.Text.RegularExpressions.Regex.Escape(id) + @"\s.*?model:(\S+)") ?? id;
+            bool live = LiveSessions().Any(x => string.Equals(x.deviceId, id, StringComparison.OrdinalIgnoreCase));
+            var cached = DevInfoCached(id);
+            // 正在投屏的这台，不在它同一条 adb 通道上再并发 shell 查询：
+            // 视频流已经占满了这条连接，每 6 秒再叠几条 getprop / wm 会让 adbd 的写路径排队，
+            // 严重时整条连接会被掐断（设备端就是 SSL_write failed）。列表信息沿用上一次读到的。
+            if (live)
+            {
+                if (cached != null)
+                {
+                    var dc = new Dictionary<string, object>(cached);
+                    dc["id"] = id;
+                    dc["via"] = id.Contains(":") ? "wireless" : "usb";
+                    string nm0 = Convert.ToString(dc["name"]);
+                    if (nm0.Length == 0 || nm0 == id) dc["name"] = modelName;
+                    return (object)dc;
+                }
+                return (object)CachedFromBaseline(id, modelName);
+            }
             // 无线设备：adb devices 里的条目可能是「假在线」——连接早断了但状态还写着 device，
             // 光看状态字段永远显示已连接。主动发一条短命令探活，探不通就判离线并 disconnect，
             // 让这条陈旧条目从 adb 里彻底消失，后面自动重连才不会一直对着死地址空试。
@@ -1138,7 +1275,16 @@ public class MainForm : Form
                     return null;
                 }
             }
-            var name = RegexVal(r.text, "(?m)^" + System.Text.RegularExpressions.Regex.Escape(id) + @"\s.*?model:(\S+)") ?? id;
+            // 名字、系统版本、分辨率不用每 6 秒重读一遍：20 秒内直接沿用上次结果
+            if (cached != null && DevInfoFresh(id, 20))
+            {
+                var dc = new Dictionary<string, object>(cached);
+                dc["id"] = id;
+                dc["via"] = id.Contains(":") ? "wireless" : "usb";
+                if (modelName != id) dc["name"] = modelName;
+                return (object)dc;
+            }
+            var name = modelName;
             var tModel = Adb(id, "shell", "getprop", "ro.product.model");
             var tRel = Adb(id, "shell", "getprop", "ro.build.version.release");
             var tWm = ReadWm(id);
@@ -1156,6 +1302,7 @@ public class MainForm : Form
             };
             foreach (var kv in wm) d[kv.Key] = kv.Value;
             RememberBaseline(id, wm);   // 顺手记下设备当前的生效分辨率/密度，还原时写回这个值
+            DevInfoStore(id, d);
             Log("device " + id + " " + d["name"] + " " + d["currentSize"]);
             return (object)d;
         }).ToList();
@@ -1330,13 +1477,26 @@ public class MainForm : Form
             dpi = (int)Math.Round(dpi0 * k);
         }
 
-        SaveState(id, (bool)info["hadSizeOverride"] ? (string)info["currentSize"] : null,
-                       (bool)info["hadDpiOverride"] ? Convert.ToString(info["currentDpi"]) : null);
+        // 上一份还原记录还没结清（掉线后没重连上、或用户还没去还原）就别覆盖：
+        // 此刻读到的"当前尺寸"已经是放大后的值，存进去会把原尺寸弄丢，之后再也还原不回去
+        bool keepOldState = false;
+        try
+        {
+            var st0 = ReadJson(StateFile) as Dictionary<string, object>;
+            if (st0 != null && string.Equals(Tv(st0, "host"), HostOf(id), StringComparison.OrdinalIgnoreCase))
+                keepOldState = true;
+        }
+        catch { }
+        if (!keepOldState)
+            SaveState(id, (bool)info["hadSizeOverride"] ? (string)info["currentSize"] : null,
+                           (bool)info["hadDpiOverride"] ? Convert.ToString(info["currentDpi"]) : null);
 
         await Adb(id, "shell", "wm", "size", w + "x" + h);
         await Adb(id, "shell", "wm", "density", dpi.ToString());
         await Task.Delay(1200);
         var now = await ReadWm(id);
+        // 记设备实际接受的值：它可能把尺寸卡在上限，记实际值下次才认得出这是我们的缩放
+        SaveApplied(id, Convert.ToString(now["currentSize"]), Convert.ToString(now["currentDpi"]));
         var got = ((string)now["currentSize"]).Split('x');
 
         // 设了但没变 = 设备拒绝了（常见于 realme/OPPO 这类收紧了 shell 权限的 ROM）。
@@ -1375,7 +1535,8 @@ public class MainForm : Form
                 dict["applied"] = new Dictionary<string, object> {
                     { "w", int.Parse(got[0]) }, { "h", int.Parse(got[1]) }, { "dpi", now["currentDpi"] } };
             if (notice.Length > 0) dict["notice"] = notice;
-            ArmRetry(p, q => LaunchScaled(q));
+            // 放大这一路重连必须原样重启，不能重跑「改分辨率 + 启动」这套流程
+            if (!dict.ContainsKey("error")) ArmRespawn(lastSpawned);
         }
         return res;
     }
@@ -1395,6 +1556,7 @@ public class MainForm : Form
                 WorkingDirectory = engineDir
             };
             var pr = Process.Start(psi);
+            try { pr.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
             string kbdMode = a.Contains("--keyboard=uhid") ? "hw"
                 : (a.Contains("--keyboard=disabled") ? "off" : "sys");
             var sess = new CastSession {
@@ -1405,10 +1567,12 @@ public class MainForm : Form
                 kbd = kbdMode,
                 startedAt = DateTime.Now.ToString("HH:mm"),
                 startedAtDt = DateTime.Now,
-                retryGen = retryGen
+                retryGen = retryGen,
+                argv = new List<string>(a)
             };
             lock (SessionLock) Sessions.Add(sess);
             lastSpawned = sess;
+            StartTrace(sess);   // 本机侧心跳：掉线时能回答是本地先断还是网络先抖
             // 物理键盘通道同一台设备只能有一路占着，第二路常常打不开
             bool kbdClash = kbdMode == "hw" && LiveSessions().Any(x => x.pid != pr.Id
                 && string.Equals(x.deviceId, id, StringComparison.OrdinalIgnoreCase) && x.kbd == "hw");
@@ -1432,17 +1596,24 @@ public class MainForm : Form
             pr.EnableRaisingEvents = true;
             pr.Exited += async (s, e) =>
             {
+                // 掉线瞬间的本机现场先抓下来：等管道读完再抓，连接状态已经变了
+                string hostSnap = HostSocketSnapshot(sess.deviceId);
                 await Task.Delay(400);   // 等管道读干净再取最后几行
                 int code = -1;
                 try { code = pr.ExitCode; } catch { }
                 string[] last;
                 lock (gate) { last = tail.ToArray(); }
+                string traceText = TraceDump(sess);
+                try { if (sess.traceCts != null) sess.traceCts.Cancel(); } catch { }
                 Log("scrcpy 退出 code=" + code);
                 int from = Math.Max(0, last.Length - 12);
                 for (int i = from; i < last.Length; i++) Log("  | " + last[i]);
-                // 无论是谁关的这一路（程序、Alt+F4、任务栏），最后一路收尾时把设备参数还原
                 lock (SessionLock) Sessions.Remove(sess);
-                if (sess.scaled && RestoreOnClose() && !HasLiveSession(sess.deviceId))
+                // 用户主动关的这一路，最后收尾时把设备参数还原。
+                // 异常断开（网络掉线这类）不走还原：中途把分辨率改回去、重连时再改回来，
+                // 正在跑的游戏会被迫重新布局甚至崩掉；重连直接沿用原参数，设备那边一点都不动。
+                bool abnormal = code != 0 && !sess.intentional;
+                if (sess.scaled && RestoreOnClose() && !abnormal && !HasLiveSession(sess.deviceId))
                 {
                     try
                     {
@@ -1456,10 +1627,10 @@ public class MainForm : Form
                     catch (Exception ex2) { Log("自动还原异常: " + ex2.Message); }
                 }
                 // 不是用户关的、也不是正常退出：先留一份设备端现场，再等设备回来用原参数重连
-                if (code != 0 && !sess.intentional)
+                if (abnormal)
                 {
                     string tailText = string.Join("\n", last);
-                    var _c = Task.Run(() => CaptureDropLog(sess.deviceId, tailText));
+                    var _c = Task.Run(() => CaptureDropLog(sess.deviceId, tailText, traceText, hostSnap));
                     if (sess.retry != null)
                     {
                         var again = sess.retry;
@@ -1485,9 +1656,127 @@ public class MainForm : Form
         lock (SessionLock) { foreach (var s in Sessions) if (s.pid == pid) s.intentional = true; }
     }
 
+    // 掉线追踪：每 0.5 秒看一次本机到设备的 TCP 连接状态，每 2 秒 ping 一次。
+    // 全在本机做，不给设备加任何 adb 命令；掉线时这两条线能回答"是本机先断的、还是网络先抖的"。
+    void StartTrace(CastSession sess)
+    {
+        string ip = HostOf(sess.deviceId);
+        IPAddress ipa;
+        if (!IPAddress.TryParse(ip, out ipa)) return;
+        var cts = new CancellationTokenSource();
+        sess.traceCts = cts;
+        var ct = cts.Token;
+        Task.Run(async () =>
+        {
+            int n = 0;
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    var sig = string.Join(", ",
+                        IPGlobalProperties.GetIPGlobalProperties()
+                            .GetActiveTcpConnections()
+                            .Where(c => c.RemoteEndPoint.Address.ToString() == ip)
+                            .OrderBy(c => c.LocalEndPoint.Port)
+                            .Select(c => c.LocalEndPoint.Port + ">" + c.RemoteEndPoint.Port + " " + c.State)
+                            .ToArray());
+                    if (sig != sess.lastNetSig)
+                    {
+                        sess.lastNetSig = sig;
+                        AddTrace(sess, sess.netTrace, DateTime.Now.ToString("HH:mm:ss.fff") + " " +
+                            (sig.Length > 0 ? sig : "(没有到设备的 TCP 连接)"));
+                    }
+                }
+                catch { }
+                if (n % 4 == 0)
+                {
+                    string line;
+                    try
+                    {
+                        using (var pg = new Ping())
+                        {
+                            var rep = pg.Send(ipa, 1200);
+                            line = rep.Status == IPStatus.Success ? ("通 " + rep.RoundtripTime + "ms") : rep.Status.ToString();
+                        }
+                    }
+                    catch (Exception ex) { line = "失败 " + ex.Message; }
+                    AddTrace(sess, sess.pingTrace, DateTime.Now.ToString("HH:mm:ss") + " " + line);
+                }
+                n++;
+                try { await Task.Delay(500, ct); } catch { break; }
+            }
+        });
+    }
+
+    static void AddTrace(CastSession sess, List<string> list, string line)
+    {
+        lock (sess.traceLock)
+        {
+            list.Add(line);
+            while (list.Count > 300) list.RemoveAt(0);
+        }
+    }
+
+    string TraceDump(CastSession sess)
+    {
+        var sb = new StringBuilder();
+        lock (sess.traceLock)
+        {
+            sb.AppendLine("-- 本机到设备的网络心跳 --");
+            sb.AppendLine("[TCP 连接状态，只在变化时记]");
+            foreach (var l in sess.netTrace) sb.AppendLine("  " + l);
+            sb.AppendLine("[Ping，每 2 秒一次]");
+            foreach (var l in sess.pingTrace) sb.AppendLine("  " + l);
+        }
+        return sb.ToString();
+    }
+
+    // 掉线那一瞬间从本机抓一次；等设备回来再抓，这个现场就没了
+    string HostSocketSnapshot(string id)
+    {
+        string ip = HostOf(id);
+        try
+        {
+            var list = IPGlobalProperties.GetIPGlobalProperties()
+                .GetActiveTcpConnections()
+                .Where(c => c.RemoteEndPoint.Address.ToString() == ip)
+                .Select(c => c.LocalEndPoint + " -> " + c.RemoteEndPoint + " " + c.State)
+                .ToArray();
+            return list.Length > 0 ? string.Join("\n", list) : "(掉线瞬间本机已没有到设备的 TCP 连接)";
+        }
+        catch (Exception ex) { return "(读取失败: " + ex.Message + ")"; }
+    }
+
+    // 掉线前后本机系统日志：网卡、驱动、电源、程序崩溃都会留在这里
+    string RecentEvents(string logName, int minutes)
+    {
+        var sb = new StringBuilder();
+        try
+        {
+            string xp = "*[System[TimeCreated[timediff(@SystemTime) <= " + (minutes * 60000) + "]]]";
+            var q = new System.Diagnostics.Eventing.Reader.EventLogQuery(logName,
+                System.Diagnostics.Eventing.Reader.PathType.LogName, xp);
+            using (var rd = new System.Diagnostics.Eventing.Reader.EventLogReader(q))
+            {
+                int n = 0;
+                for (var rec = rd.ReadEvent(); rec != null && n < 60; rec = rd.ReadEvent(), n++)
+                {
+                    string msg = "";
+                    try { msg = (rec.FormatDescription() ?? "").Replace("\r", " ").Replace("\n", " "); } catch { }
+                    if (msg.Length > 240) msg = msg.Substring(0, 240) + "…";
+                    sb.AppendLine((rec.TimeCreated.HasValue ? rec.TimeCreated.Value.ToString("yyyy-MM-dd HH:mm:ss") : "?")
+                        + "  " + rec.ProviderName + " id=" + rec.Id + " " + (rec.LevelDisplayName ?? ""));
+                    if (msg.Length > 0) sb.AppendLine("    " + msg);
+                }
+            }
+        }
+        catch (Exception ex) { sb.AppendLine("(读取失败: " + ex.Message + ")"); }
+        return sb.ToString();
+    }
+
     // 掉线现场：设备回来后把它的 Wi-Fi 状态、投屏进程最后的输出、最近几分钟 logcat 存成一份文件。
     // 掉线当时设备往往已经不可达，所以这里先等它回来（最多一分钟），拿到就存。
-    async Task CaptureDropLog(string id, string sessionTail)
+    async Task CaptureDropLog(string id, string sessionTail, string traceText, string hostSnap)
     {
         try
         {
@@ -1497,8 +1786,14 @@ public class MainForm : Form
                 await Task.Delay(2000);
             }
             if (await DeviceState(id) != "device") { Log("掉线现场没抓到：设备一直没回来 " + id); return; }
-            var lg = await AdbT(15000, id, "shell", "logcat -d -v time -t 3000");
+            // logcat 里编解码器每帧都刷几行，不滤掉的话关键的 adbd / Wi-Fi / 内存事件会被冲没
+            var lg = await AdbT(20000, id, "shell",
+                "logcat -d -b all -v time -t 30000 | grep -vE 'C2Unisoc|SimpleUnisoc|gralloc4|VSP |BufferPool|GraphicBufferSource'");
             var wf = await AdbT(8000, id, "shell", "dumpsys wifi | grep -E 'mWifiInfo|StatsCurr|Detailed state'");
+            var sy = await AdbT(12000, id, "shell",
+                "cat /proc/meminfo | head -8; echo ---; uptime; echo ---; dumpsys meminfo | head -18; echo ---; ps -A -o PID,PPID,RSS,NAME | grep -E 'app_process|adbd'");
+            var lb = await AdbT(6000, id, "shell", "logcat -g");
+            var dm = await AdbT(8000, id, "shell", "dmesg | tail -150");
             string dir = Path.Combine(DataDir, "logs");
             Directory.CreateDirectory(dir);
             string safe = id.Replace(':', '_').Replace('.', '_');
@@ -1509,9 +1804,42 @@ public class MainForm : Form
             sb.AppendLine();
             sb.AppendLine("-- 投屏进程最后的输出 --");
             sb.AppendLine(sessionTail ?? "");
+            sb.AppendLine("-- 掉线瞬间本机的 TCP 连接 --");
+            sb.AppendLine(hostSnap ?? "");
+            sb.AppendLine(traceText ?? "");
+            sb.AppendLine("-- 本机 adb 服务 --");
+            int ap = Port5037Pid();
+            if (ap > 0)
+            {
+                try
+                {
+                    var p5 = Process.GetProcessById(ap);
+                    sb.AppendLine(p5.ProcessName + " pid=" + ap + " 启动于 " + p5.StartTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                }
+                catch { sb.AppendLine("pid=" + ap); }
+            }
+            sb.AppendLine("-- 本机到设备的 TCP 连接（设备回来之后） --");
+            try
+            {
+                var ns = await Run("netstat", new[] { "-ano", "-p", "TCP" }, 5000);
+                string hip = HostOf(id) + ":";
+                var conns = (ns.text ?? "").Split('\n').Where(x => x.IndexOf(hip, StringComparison.Ordinal) >= 0).ToArray();
+                sb.AppendLine(conns.Length > 0 ? string.Join("\n", conns) : "(没有到这台设备的 TCP 连接)");
+            }
+            catch { }
+            sb.AppendLine("-- 本机系统事件（掉线前后 15 分钟） --");
+            sb.AppendLine(RecentEvents("System", 15));
+            sb.AppendLine("-- 本机应用事件（掉线前后 15 分钟） --");
+            sb.AppendLine(RecentEvents("Application", 15));
             sb.AppendLine("-- 设备 Wi-Fi 状态 --");
             sb.AppendLine(wf == null ? "" : (wf.text ?? ""));
-            sb.AppendLine("-- logcat（最后 3000 行） --");
+            sb.AppendLine("-- 设备内存与负载 --");
+            sb.AppendLine(sy == null ? "" : (sy.text ?? ""));
+            sb.AppendLine("-- 设备日志缓冲区大小 --");
+            sb.AppendLine(lb == null ? "" : (lb.text ?? ""));
+            sb.AppendLine("-- 内核日志（可能因权限读不到） --");
+            sb.AppendLine(dm == null ? "" : (dm.text ?? ""));
+            sb.AppendLine("-- logcat（最后 30000 行，已滤掉编解码器刷屏） --");
             sb.AppendLine(lg == null ? "" : (lg.text ?? ""));
             File.WriteAllText(file, sb.ToString(), new System.Text.UTF8Encoding(false));
             uiNotice = "掉线现场已保存：" + file;
@@ -1536,7 +1864,8 @@ public class MainForm : Form
                 var r = await again();
                 var d = r as Dictionary<string, object>;
                 bool ok = d != null && !d.ContainsKey("error");
-                uiNotice = ok ? (nm + " 掉线后已自动重连") : (nm + " 掉线了，自动重连没成功，请手动连接");
+                uiNotice = ok ? (nm + " 掉线后已自动重连")
+                    : (nm + " 掉线了，自动重连没成功，请手动连接；设备分辨率保持原样，需要还原到「显示还原」页");
                 Log("自动重连" + (ok ? "完成 " : "失败 ") + id);
                 return;
             }
@@ -1552,7 +1881,7 @@ public class MainForm : Form
             }
             await Task.Delay(2000);
         }
-        uiNotice = nm + " 掉线了，一直没回到网络；自动重连已停止";
+        uiNotice = nm + " 掉线了，一直没回到网络；自动重连已停止。设备分辨率保持原样，回来后可到「显示还原」页还原";
         Log("自动重连放弃 " + id);
     }
 
@@ -1625,6 +1954,24 @@ public class MainForm : Form
             // 首次没有这张表，取值会抛 KeyNotFoundException，必须先试取
             all.TryGetValue(BaselineKey(id), out oldO);
             var old = oldO as Dictionary<string, object>;
+            // 设备当前这个覆盖值如果正是我们上次设的，就不能当"原始状态"记下来；
+            // 否则还原只会写回同一个值，表现就是"点了还原没反应"。
+            var ap = AppliedFor(id);
+            bool sizeMine = ap != null && (bool)wm["hadSizeOverride"]
+                && Convert.ToString(wm["currentSize"]) == Tv(ap, "size");
+            bool dpiMine = ap != null && (bool)wm["hadDpiOverride"]
+                && Convert.ToString(wm["currentDpi"]) == Tv(ap, "dpi");
+            if (sizeMine || dpiMine)
+            {
+                // 已经有干净基准就保留，别让我们的缩放把它覆盖掉
+                if (old != null && Tv(old, "ovSize").Length == 0 && Tv(old, "ovDpi").Length == 0) return;
+                // 没有干净基准时按物理分辨率记，至少给还原留一条回得去的路
+                entry["size"] = entry["physSize"];
+                entry["dpi"] = entry["physDpi"];
+                entry["ovSize"] = "";
+                entry["ovDpi"] = "";
+            }
+            else if (ap != null) ClearApplied(id);   // 和设备现状对不上，说明已经不是我们设的值了
             // 和上次记的一样就不动盘：设备列表每几秒扫一次，没必要跟着一直写文件
             if (old != null && Convert.ToString(old["size"]) == Convert.ToString(entry["size"])
                 && Convert.ToString(old["dpi"]) == Convert.ToString(entry["dpi"])
@@ -1645,6 +1992,52 @@ public class MainForm : Form
         object o;
         all.TryGetValue(BaselineKey(id), out o);
         return o as Dictionary<string, object>;
+    }
+
+    // 记下我们最后一次给这台设备设过的分辨率和显示密度。
+    // 用来识别"设备现在这个覆盖值是不是我们自己留下的"——不能把自己的放大值当成用户的原始状态。
+    void SaveApplied(string id, string size, string dpi)
+    {
+        try
+        {
+            var all = ReadJson(AppliedFile) as Dictionary<string, object> ?? new Dictionary<string, object>();
+            all[BaselineKey(id)] = new Dictionary<string, object> {
+                { "size", size ?? "" }, { "dpi", dpi ?? "" }, { "at", DateTime.Now.ToString("HH:mm:ss") }
+            };
+            WriteJson(AppliedFile, all);
+        }
+        catch { }
+    }
+
+    Dictionary<string, object> AppliedFor(string id)
+    {
+        try
+        {
+            var all = ReadJson(AppliedFile) as Dictionary<string, object>;
+            object o;
+            return all != null && all.TryGetValue(BaselineKey(id), out o) ? o as Dictionary<string, object> : null;
+        }
+        catch { return null; }
+    }
+
+    void ClearApplied(string id)
+    {
+        try
+        {
+            var all = ReadJson(AppliedFile) as Dictionary<string, object>;
+            if (all != null && all.Remove(BaselineKey(id))) WriteJson(AppliedFile, all);
+        }
+        catch { }
+    }
+
+    void RemoveBaseline(string id)
+    {
+        try
+        {
+            var all = LoadBaselines();
+            if (all.Remove(BaselineKey(id))) WriteJson(BaselineFile, all);
+        }
+        catch { }
     }
 
     static string Tv(Dictionary<string, object> d, string k)
@@ -1670,6 +2063,7 @@ public class MainForm : Form
     async Task<object> Restore(Dictionary<string, object> p)
     {
         string id = Ps(p, "id");
+        if (HasLiveSession(id)) return Err("这台设备正在投屏，先关掉这一路再还原——中途改分辨率会把正在跑的应用打乱");
         var st = ReadJson(StateFile) as Dictionary<string, object>;
         string sid = Tv(st, "id");
         string shost = Tv(st, "host");
@@ -1679,11 +2073,54 @@ public class MainForm : Form
         string sizeArg = PickRestore(same ? Tv(st, "sizeOverride") : "", bl, "ovSize", "size", "physSize");
         string dpiArg = PickRestore(same ? Tv(st, "dpiOverride") : "", bl, "ovDpi", "dpi", "physDpi");
         Log("还原 " + id + " -> size=" + sizeArg + " density=" + dpiArg);
+        var before = await ReadWm(id);
         var r1 = await Adb(id, "shell", "wm", "size", sizeArg);
         var r2 = await Adb(id, "shell", "wm", "density", dpiArg);
         if (!r1.ok || !r2.ok) return Err("设备没响应，没能还原设备分辨率与显示大小");
         if (same) { try { File.Delete(StateFile); } catch { } }   // 设备没响应时记录要留着，重连后再补
-        return await ReadWm(id);
+        ClearApplied(id);
+        var after = await ReadWm(id);
+        // 目标值本来就是设备现在的值，写进去不会有任何变化：明确告诉界面，
+        // 别让人以为"点了还原没生效"——要继续回设备本身的分辨率得用「恢复默认」
+        bool noop = Convert.ToString(before["currentSize"]) == Convert.ToString(after["currentSize"])
+                 && Convert.ToString(before["currentDpi"]) == Convert.ToString(after["currentDpi"]);
+        after["ok"] = true;
+        after["noop"] = noop;
+        after["targetSize"] = sizeArg;
+        after["targetDpi"] = dpiArg;
+        return after;
+    }
+
+    // 兜底：直接清掉分辨率与显示密度的覆盖值，回到设备自己的物理默认。
+    // 只该在「还原」写回的原状态本身就不对时用（比如基准被上一次放大污染），界面上要二次确认。
+    async Task<object> RestoreDefault(Dictionary<string, object> p)
+    {
+        string id = Ps(p, "id");
+        if (string.IsNullOrEmpty(id)) return Err("请先选中一台设备");
+        if (HasLiveSession(id)) return Err("这台设备正在投屏，先关掉这一路再恢复默认——中途改分辨率会把正在跑的应用打乱");
+        Log("恢复默认显示参数 " + id);
+        var r1 = await Adb(id, "shell", "wm", "size", "reset");
+        var r2 = await Adb(id, "shell", "wm", "density", "reset");
+        if (!r1.ok || !r2.ok) return Err("设备没响应，没能恢复默认显示");
+        // 这台设备的未还原记录、待补还原和"我们设过的值"一起清掉，免得下次又按旧记录写回去
+        try
+        {
+            var st = ReadJson(StateFile) as Dictionary<string, object>;
+            if (st != null && (Tv(st, "id") == id || Tv(st, "host") == HostOf(id))) File.Delete(StateFile);
+        }
+        catch { }
+        try
+        {
+            var pd = ReadJson(PendingFile) as Dictionary<string, object>;
+            if (pd != null && (Tv(pd, "id") == id || Tv(pd, "host") == HostOf(id))) File.Delete(PendingFile);
+        }
+        catch { }
+        ClearApplied(id);
+        var now = await ReadWm(id);
+        RemoveBaseline(id);
+        RememberBaseline(id, now);   // 现在是物理默认，重新记一份干净基准
+        now["ok"] = true;
+        return now;
     }
 
     async Task<object> ToWireless(Dictionary<string, object> p)
@@ -1818,6 +2255,14 @@ public class MainForm : Form
 
         var claimed = new HashSet<string>(connIps, StringComparer.OrdinalIgnoreCase);  // 已经出过行的 IP
         var usedEntries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);       // 已经认领的地址簿条目
+        // 已经连着的设备，地址簿里同 IP 的条目也算「用过」。不提前认领的话，它会落到下面的
+        // 离线复核里再探一次端口；探针结束要 adb disconnect，那一下会把用户正连着的连接掐断，
+        // 表现就是「什么都没干，设备自己掉线了」。
+        foreach (var e0 in entries)
+        {
+            string eip = e0.addr.Split(':')[0];
+            if (claimed.Contains(eip)) usedEntries.Add(e0.addr);
+        }
 
         // 1) 广播里的设备：端口现成，最先列
         foreach (var dev in mdns.devs)
@@ -1894,6 +2339,7 @@ public class MainForm : Form
         foreach (var e in entries)
         {
             if (usedEntries.Contains(e.addr)) continue;
+            if (claimed.Contains(e.addr.Split(':')[0])) continue;   // 已经连着的不再复核
             WifiEntry en = e;
             restTasks.Add(Task.Run(async () =>
             {
@@ -2017,6 +2463,18 @@ public class MainForm : Form
         string addr = ip + ":" + port;
         string cached;
         if (PortCacheTryGet(addr, out cached)) return cached;
+        // 这条地址已经连着：扫描不探也不断。探针结束会执行 adb disconnect，
+        // 那一下会把用户正在用的连接掐掉（曾经因此表现为"什么都没干也掉线"）。
+        try
+        {
+            var live = await ConnectedWireless();
+            if (live.Any(x => string.Equals(x, addr, StringComparison.OrdinalIgnoreCase)))
+            {
+                PortCachePut(addr, "adb");
+                return "adb";
+            }
+        }
+        catch { }
         if (!await PortProbe(ip, port, 700)) return "closed";
         await PortGate.WaitAsync();
         string verdict = "notadb";

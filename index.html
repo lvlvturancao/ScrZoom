@@ -271,6 +271,7 @@ button,select,input{font:inherit;color:inherit}
       <a class="on" data-page="cast"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2.5"/><path d="M9 21h6M12 17v4"/><path d="M8.5 12.5a4.5 4.5 0 0 1 7 0"/></svg><span>投屏</span></a>
       <a data-page="conn"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 18.5h3"/><path d="M2.5 12a3.5 3.5 0 0 0 3.5 3.5"/><path d="M21.5 12a3.5 3.5 0 0 1-3.5 3.5"/></svg><span>显示还原</span></a>
       <a data-page="diag"><svg viewBox="0 0 24 24"><path d="M3 12h3.5l2-5 3 10 2.5-5H21"/><circle cx="6.5" cy="12" r="1.4"/><circle cx="17.5" cy="12" r="1.4"/></svg><span>连接诊断</span></a>
+      <a data-page="opts"><svg viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/><circle cx="9" cy="6.5" r="2.2"/><circle cx="15" cy="12" r="2.2"/><circle cx="9" cy="17.5" r="2.2"/></svg><span>更多参数</span></a>
       <div class="grp">本机</div>
       <div class="meta" id="navMeta">显示器 —<br>引擎 —</div>
     </div>
@@ -329,28 +330,13 @@ button,select,input{font:inherit;color:inherit}
           <div class="rows" id="tiers"></div>
           <div class="desc" id="tiersNote" hidden></div>
         </div>
-        <details class="disc">
-          <summary><span class="chev">▶</span>更多参数</summary>
-          <div class="fields">
-            <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
-            <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
-            <div class="field"><label>窗口宽度（留空自动）</label><input id="fWinW" placeholder="如 720" maxlength="5" style="width:104px"></div>
-            <div class="field"><label>键盘<span class="tip inline">?<span class="bub"><p>想打中文，两条路：在手机上用自带输入法（默认的「系统注入」不会把手机输入法顶掉，点输入框就弹出来）；或者在电脑上复制、再到投屏窗口里按 Alt+V，把内容送进手机。</p><p>直接在电脑键盘上敲汉字，三种模式都上不去——投屏通道只认字母、数字和符号，汉字没有对应的键可发（实测系统自带的输入命令遇到汉字直接报错）。</p><p>「物理键盘」相当于给手机插了一把实体键盘，游戏按键更跟手，代价是手机输入法会被收起来。</p><p>「只看画面」不转发键盘：演示、看视频时不会误触；设备不接受键盘注入时也能用它先把画面看起来。</p><p>这里改了要关掉这一路重新开才生效。</p></span></span></label><select id="fKbd"><option value="sys">系统注入（推荐）</option><option value="hw">物理键盘（游戏按键）</option><option value="off">只看画面（不接管键盘）</option></select></div>
-          </div>
-          <div class="wr" style="margin-top:12px;gap:18px;flex-wrap:wrap">
-            <label class="chk"><input type="checkbox" id="chkTop"> 窗口置顶</label>
-            <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（用 Alt+Q 关闭）</label>
-            <label class="chk"><input type="checkbox" id="chkLegacy"> 电脑内容粘不进手机时勾选</label>
-            <label class="chk"><input type="checkbox" id="chkKeepAwake"> 投屏期间不让设备息屏</label>
-          </div>
-        </details>
-      </div>
+        </div>
 
       <!-- 应用投屏：从「投屏 → 应用投屏」进入的二级页面 -->
       <div class="page" id="pg-wins">
         <div class="sec">
           <div class="h"><button class="back" id="btnBackCast">‹ 返回投屏</button><b>应用投屏</b>
-            <span class="tip">?<span class="bub"><p>每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排多个应用。</p><p>这块桌面由电脑键鼠操作，掌机自己的按键和触屏不控制它；电脑键盘默认走系统注入，输入法的键盘会弹在这块屏上，能直接打中文。想更跟手就在「投屏 → 更多参数 → 键盘」里改成物理键盘，改完要重开这一路。</p><p>竖屏应用会把自己的窗口转成竖的（实测 B站、微信都会），横屏应用保持横屏；<b>每多开一个窗口，编码负担累加一份</b>。</p><p>掌机的前端不会在第二块屏上画东西，那里会黑屏。</p></span></span>
+            <span class="tip">?<span class="bub"><p>每个应用一块虚拟屏、一个独立窗口，电脑上可同时并排多个应用。</p><p>这块桌面由电脑键鼠操作，掌机自己的按键和触屏不控制它；电脑键盘默认走系统注入，输入法的键盘会弹在这块屏上，能直接打中文。想更跟手就在「更多参数 → 键盘」里改成物理键盘，改完要重开这一路。</p><p>竖屏应用会把自己的窗口转成竖的（实测 B站、微信都会），横屏应用保持横屏；<b>每多开一个窗口，编码负担累加一份</b>。</p><p>掌机的前端不会在第二块屏上画东西，那里会黑屏。</p></span></span>
             <span style="flex:1"></span>
             <button class="iconbtn" id="btnVdClean">清理残留虚拟屏</button>
           </div>
@@ -393,7 +379,7 @@ button,select,input{font:inherit;color:inherit}
       <!-- 显示还原 -->
       <div class="page" id="pg-conn">
         <div class="sec">
-          <div class="h"><b>分辨率还原</b><span>改过画面档位但没自动还原时用这里</span></div>
+          <div class="h"><b>分辨率还原</b><span>改过画面档位但没自动还原时用这里；先到「投屏」页选中设备</span></div>
           <div class="rows" id="restoreBox"></div>
           <label class="chk" style="margin-top:11px"><input type="checkbox" id="chkRestoreClose" checked> 结束投屏后还原设备参数</label>
         </div>
@@ -414,6 +400,29 @@ button,select,input{font:inherit;color:inherit}
           <div class="wm" id="u2wMsg"></div>
           <div class="rows" id="u2wBox"></div>
           <button class="go" id="btnU2W" style="margin-top:10px">转成无线连接</button>
+        </div>
+      </div>
+      <!-- 更多参数 -->
+      <div class="page" id="pg-opts">
+        <div class="sec">
+          <div class="h"><b>画面</b><span>默认值就够用；改完对新开的投屏生效，已经在跑的关掉重开</span></div>
+          <div class="fields">
+            <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
+            <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
+            <div class="field"><label>窗口宽度（留空自动）</label><input id="fWinW" placeholder="如 720" maxlength="5" style="width:104px"></div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="h"><b>键盘与窗口</b><span>键盘改了要关掉这一路重新开</span></div>
+          <div class="fields">
+            <div class="field"><label>键盘<span class="tip inline">?<span class="bub"><p>想打中文，两条路：在手机上用自带输入法（默认的「系统注入」不会把手机输入法顶掉，点输入框就弹出来）；或者在电脑上复制、再到投屏窗口里按 Alt+V，把内容送进手机。</p><p>直接在电脑键盘上敲汉字，三种模式都上不去——投屏通道只认字母、数字和符号，汉字没有对应的键可发（实测系统自带的输入命令遇到汉字直接报错）。</p><p>「物理键盘」相当于给手机插了一把实体键盘，游戏按键更跟手，代价是手机输入法会被收起来。</p><p>「只看画面」不转发键盘：演示、看视频时不会误触；设备不接受键盘注入时也能用它先把画面看起来。</p><p>这里改了要关掉这一路重新开才生效。</p></span></span></label><select id="fKbd"><option value="sys">系统注入（推荐）</option><option value="hw">物理键盘（游戏按键）</option><option value="off">只看画面（不接管键盘）</option></select></div>
+          </div>
+          <div class="wr" style="margin-top:12px;gap:18px;flex-wrap:wrap">
+            <label class="chk"><input type="checkbox" id="chkTop"> 窗口置顶</label>
+            <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（用 Alt+Q 关闭）</label>
+            <label class="chk"><input type="checkbox" id="chkLegacy"> 电脑内容粘不进手机时勾选</label>
+            <label class="chk"><input type="checkbox" id="chkKeepAwake"> 投屏期间不让设备息屏</label>
+          </div>
         </div>
       </div>
     </div>
@@ -474,7 +483,7 @@ button,select,input{font:inherit;color:inherit}
         <span>让手机复制</span><kbd>Alt+C</kbd>
         <span>退出投屏</span><kbd>Alt+Q</kbd>
       </div>
-      <p class="kt">鼠标右键是返回，中键是主页，第四键是最近任务。这些键在投屏窗口上按才生效。打不进中文时：电脑上照常复制，到投屏窗口里按 Alt+V，它会把电脑上的内容送到手机再粘贴（安卓 7 以上）；还是粘不进就在「更多参数」里勾上「电脑内容粘不进手机时勾选」。</p>
+      <p class="kt">鼠标右键是返回，中键是主页，第四键是最近任务。这些键在投屏窗口上按才生效。打不进中文时：电脑上照常复制，到投屏窗口里按 Alt+V，它会把电脑上的内容送到手机再粘贴（安卓 7 以上）；还是粘不进就在「更多参数」页勾上「电脑内容粘不进手机时勾选」。</p>
     </div>
     <div class="ab-sep"></div>
     <div class="ab-don">
@@ -547,6 +556,7 @@ const api = {
   appIcon: (id, pkg) => call('app-icon', { id, pkg }),
   appsLaunch: (o) => call('apps-launch', Object.assign({}, o, winOpts())),
   restore: (id) => call('restore', { id }),
+  restoreDefault: (id) => call('restore-default', { id }),
   kbdProbe: (id) => call('kbd-probe', { id }),
   kbdHardKeys: (id) => call('kbd-hardkb-settings', { id }),
   toWireless: (id) => call('to-wireless', { id }),
@@ -847,19 +857,35 @@ async function renderWins() {
 }
 async function renderConn() {
   const st = await api.state();
-  $('restoreBox').innerHTML = st
-    ? `<div class="row wrap"><span class="ic">${IC.undo}</span><div><div class="nm">有未还原的改动</div><div class="mt">设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '原样')} / ${esc(st.dpiOverride || '原样')}</div></div>
-       <span class="sp"></span><button class="b2" id="btnDoRestore">还原</button></div>`
-    : `<div class="row wrap"><span class="ic">${IC.undo}</span><div><div class="nm">没有未还原的记录</div><div class="mt">需要强制写回设备原本的分辨率与显示大小时用</div></div>
-       <span class="sp"></span><button class="b2" id="btnDoRestore">还原</button></div>`;
+  $('restoreBox').innerHTML = `<div class="row wrap"><span class="ic">${IC.undo}</span>
+    <div><div class="nm">${st ? '写回上次记录的原状态' : '没有未还原的记录'}</div>
+    <div class="mt">${st ? `设备 ${esc(st.id)} · 应还原成 ${esc(st.sizeOverride || '原样')} / ${esc(st.dpiOverride || '原样')}` : '按这台设备上次记下的原始状态写回；记录本身有问题时用「恢复默认」'}</div></div>
+    <span class="sp"></span>
+    <button class="b2" id="btnDoRestore">还原</button>
+    <button class="b2" id="btnDoReset">恢复默认</button></div>
+    <div class="desc" style="margin-top:8px">「还原」写回上次记录的原状态。如果这份记录本身就是放大后的尺寸，还原不会有变化；要直接回到设备自己的物理分辨率和显示大小，用「恢复默认」。</div>`;
+  const pickId = () => {
+    const d = cur();
+    return (d && d.id) || (st && st.id) || '';
+  };
   $('btnDoRestore').onclick = async () => {
     // 设备可能已经断开，但「有未还原的改动」记录里存着当时的地址：优先用在线设备，其次用记录地址
-    const d = cur();
-    const id = (d && d.id) || (st && st.id) || '';
+    const id = pickId();
     if (!id) return toast('没有在线设备，无法还原', true);
     const r = await api.restore(id);
     if (r && r.error) return toast(r.error, true);
+    if (r && r.noop) return toast('记录的原状态就是当前这个分辨率，还原不会有变化。要回到设备本身的物理分辨率，用「恢复默认」。', true);
     toast('已还原设备分辨率与显示大小');
+    await refresh();
+  };
+  $('btnDoReset').onclick = async () => {
+    const btn = $('btnDoReset');
+    const id = pickId();
+    if (!id) return toast('没有在线设备，无法恢复默认', true);
+    btn.disabled = true; btn.textContent = '恢复中…';
+    const r = await api.restoreDefault(id);
+    if (r && r.error) { btn.disabled = false; btn.textContent = '恢复默认'; return toast(r.error, true); }
+    toast('已恢复默认显示：' + (r.currentSize || '—') + ' · ' + (r.currentDpi || '—') + 'dpi');
     await refresh();
   };
 }
