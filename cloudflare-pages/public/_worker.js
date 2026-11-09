@@ -2,16 +2,18 @@
  * Cloudflare Pages _worker.js - 水月清影主页浏览与下载量统计
  * 使用 Advanced Mode，替代 functions/ 目录。KV 绑定：SHUIYUE_STATS_KV（wrangler.toml）
  * - 访问 '/' 或 '/index.html' → page_view（主页浏览量）
- * - 下载正式包 '/shuiyue-<版本>.zip' → package_download（下载量）
- *   只认正式包文件名，带 Range 的分段/探测请求不计，否则一次完整性核对会被记成下载。
+ * - 下载任意 .zip → package_download（下载量）
+ *   不校验包名，避免以后改名漏计；带 Range 的分段/续传/探测请求不计，否则一次下载会被记成多次。
  * - GET /api/stats → { available, date, pageViewsTotal, downloadsTotal, pageViewsToday, downloadsToday }
  * 累计(total) 与 今日(daily) 两组计数，按 Asia/Shanghai 的当天日期写入。
  */
 
 const STATS_KV_BINDING_NAME = 'SHUIYUE_STATS_KV';
 
-/** 正式包文件名：/shuiyue-<major>.<minor>.<patch>.zip */
-const OFFICIAL_PACKAGE = /^\/shuiyue-\d+\.\d+\.\d+\.zip$/i;
+// 下载量只认"这是一个 zip 文件的 GET"，不认具体包名；以后改包名也不会漏计
+function isDownload(pathname) {
+  return /\.zip$/i.test(pathname);
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -34,7 +36,7 @@ function recordPublicStats(request, env, ctx, response) {
   const pathname = new URL(request.url).pathname;
   if (pathname === '/' || pathname === '/index.html') {
     ctx.waitUntil(incrementStats(env, 'page_view'));
-  } else if (OFFICIAL_PACKAGE.test(pathname) && !request.headers.get('Range')) {
+  } else if (isDownload(pathname) && !request.headers.get('Range')) {
     ctx.waitUntil(incrementStats(env, 'package_download'));
   }
 }

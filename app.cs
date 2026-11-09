@@ -174,12 +174,92 @@ public class MainForm : Form
         public object traceLock = new object();
         public string lastNetSig = "";
         public CancellationTokenSource traceCts;
+        // 诊断面板：配置从启动参数解析，运行数据由 scrcpy 输出和本机心跳填充
+        public string cfgBitrate = "", cfgMaxFps = "", cfgMaxSize = "", cfgVideoBuffer = "0", cfgAudio = "on", cfgAudioCodec = "", cfgAudioKbps = "", cfgAudioBuffer = "";
+        public string videoCodec = "", audioCodec = "";
+        public string streamSize = "";   // 引擎实际编码/解码的画面尺寸，从 Texture 日志读
+        public int fps; public DateTime fpsAt; public int skippedLast;
+        public List<int> skipRing = new List<int>();
+        public List<PingSample> pingSamples = new List<PingSample>();
+        public int tcpConns; public string tcpStates = ""; public List<int> tcpPorts = new List<int>();
+        public string resolvedIp = "";
+        public List<string> events = new List<string>();
+        public double cpuPct; public DateTime cpuAt;
+    }
+
+    class PingSample { public DateTime t; public int ms; public bool ok; }
+    class DevSample { public DateTime t; public double txMbps, rxMbps, retriedPerSec, lostPerSec; }
+
+    // 设备侧采样结果：同一台设备的几路投屏共用一份（adb 隧道只有一条）
+    class DevTelemetry
+    {
+        public DateTime at;
+        public string adbId = "", err = "";
+        public bool ok, wifiViaDumpsys, ssOk;
+        public string ip = "", ssid = "", bssid = "", band = "";
+        public int rssiDbm = -127, linkMbps, txLinkMbps, rxLinkMbps, freqMhz, nproc;
+        public long txBytes, rxBytes, txPackets, rxPackets, successTx, retriedTotal, lostTotal;
+        public long prevTxBytes = -1, prevRxBytes = -1, prevRetriedTotal = -1, prevLostTotal = -1; public DateTime prevAt;
+        public double txMbps, rxMbps, retriedPerSec, lostPerSec;
+        public double load1, load5, load15;
+        public double cpuPctDev; public long prevCpuTotal, prevCpuIdle;
+        public long memTotalKb, memFreeKb, memAvailKb, swapTotalKb, swapFreeKb, swapUsedKb;
+        public string rto = "", cwnd = "", ssthresh = "", retrans = "";
+        public List<string> ssLines = new List<string>();
+        public List<DevSample> hist = new List<DevSample>();
+        public string rawWifi = "", rawSs = "";
+    }
+
+    class EndedSession
+    {
+        public DateTime at; public int pid, code, retryGen;
+        public string deviceId = "", deviceName = "", mode = "", size = "";
+        public bool abnormal, intentional;
+        public List<string> events = new List<string>(), tail = new List<string>();
     }
     // 给界面的一次性提示（自动重连这类后台事件没地方推，扫描时捎带回去）
     static string uiNotice = "";
     static readonly List<CastSession> Sessions = new List<CastSession>();
     static readonly object SessionLock = new object();
     CastSession lastSpawned;
+
+    // 诊断面板：设备快照、观察窗口和刚结束的会话
+    readonly Dictionary<string, DevTelemetry> devStats = new Dictionary<string, DevTelemetry>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, DateTime> devAttempt = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, int> devFailStreak = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, bool> devWifiCmdBad = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<int, DateTime> statWatch = new Dictionary<int, DateTime>();
+    readonly Dictionary<int, EndedSession> endedSessions = new Dictionary<int, EndedSession>();
+    readonly object devStatsLock = new object();
+    readonly object statCtlLock = new object();
+    readonly HashSet<string> devSampling = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    bool statsLoopRunning;
+
+    static string DevKey(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return "";
+        if (IsWirelessId(id) && id.Contains(":")) return HostOf(id);
+        return id;
+    }
+
+    static void AddEvent(CastSession s, string text)
+    {
+        if (s == null) return;
+        lock (s.traceLock)
+        {
+            s.events.Add(DateTime.Now.ToString("HH:mm:ss") + " " + text);
+            while (s.events.Count > 40) s.events.RemoveAt(0);
+        }
+    }
+
+    static string ArgVal(List<string> a, string key)
+    {
+        if (a == null) return "";
+        string pref = key + "=";
+        foreach (var x in a)
+            if (x != null && x.StartsWith(pref, StringComparison.OrdinalIgnoreCase)) return x.Substring(pref.Length);
+        return "";
+    }
 
     // 设备信息短缓存：投屏期间不再对同一台设备并发跑 shell 查询，列表靠上一次的结果撑住
     readonly Dictionary<string, Dictionary<string, object>> devInfoCache = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
@@ -219,7 +299,7 @@ public class MainForm : Form
         if (shown.Length == 0) shown = modelName;
         return new Dictionary<string, object> {
             { "id", id }, { "name", shown }, { "android", "" },
-            { "via", id.Contains(":") ? "wireless" : "usb" }, { "rot", "0" },
+            { "via", IsWirelessId(id) ? "wireless" : "usb" }, { "rot", "0" },
             { "physicalSize", phys }, { "physicalDpi", physDpi.Length > 0 ? physDpi : "0" },
             { "currentSize", ov.Length > 0 ? ov : size }, { "currentDpi", ovDpi.Length > 0 ? ovDpi : dpi },
             { "hadSizeOverride", ov.Length > 0 }, { "hadDpiOverride", ovDpi.Length > 0 }
@@ -616,8 +696,8 @@ public class MainForm : Form
     }
 
     // 版本号：发布脚本会核对这里的值，改版本时两个都要动
-    public const string AppVersion = "0.5.0";
-    public const int AppVersionCode = 8;
+    public const string AppVersion = "0.5.1";
+    public const int AppVersionCode = 9;
     const string UpdateUrl = "https://shuiyue-30d.pages.dev/update.json";
 
     static string AppDir() { return Path.GetDirectoryName(Application.ExecutablePath); }
@@ -652,7 +732,8 @@ public class MainForm : Form
         if (msg == null) { Log("解析结果为空: " + raw); return; }
         string id = Get(msg, "id");
         string action = Get(msg, "action");
-        Log("recv " + action + " id=" + id);
+        // 诊断面板 1 秒一次，不能每次都写日志，否则 debug.log 会被刷满
+        if (action != "session-stats") Log("recv " + action + " id=" + id);
         var payload = msg.ContainsKey("payload") ? msg["payload"] as Dictionary<string, object> : new Dictionary<string, object>();
         if (action == "__jserror") { Log("JS错误: " + Get(payload, "msg") + " @行" + Get(payload, "line")); return; }
         object result;
@@ -891,6 +972,8 @@ public class MainForm : Form
             case "wifi-connect": return await WifiConnect(p);
             case "wifi-forget": return WifiForget(p);
             case "sessions": return await SessionsList();
+            case "session-stats": return SessionStats(p);
+            case "copy-text": return CopyText(p);
             case "vd-pullback": return await PullBackApp(p);
             case "conn-diag": return await ConnectionDiag(p);
             case "usb-to-wireless": return await UsbToWireless(p);
@@ -941,31 +1024,29 @@ public class MainForm : Form
     }
 
     // 5037 上的 adb 服务常被别的程序占着（例如手机助手常驻的 adb daemon）：
-    // 那种服务收不到 mDNS 广播，连 Android 11+ 的 TLS 无线调试也会报 failed to connect。
+    // 那种服务版本旧，收不到 mDNS 广播，连 Android 11+ 的 TLS 无线调试也会报 failed to connect。
     // 启动时发现占用者不是自带的 adb，就把它换掉，换成随程序分发的版本。
     void EnsureOwnAdbServer()
     {
         if (adbExe == null) return;
         int pid = Port5037Pid();
-        if (pid <= 0)
+        if (pid <= 0 && ServerWireVersion() <= 0)
         {
             // 没有服务就先起好，顺手提一下优先级，别等第一次查询时才起
             RunRaw(adbExe, new[] { "start-server" }, 15000);
             BoostServer(Port5037Pid());
+            ForgetForeignCache();
             return;
         }
-        string owner = "";
-        try { owner = Process.GetProcessById(pid).MainModule.FileName; } catch { }
-        if (owner.Length == 0) { Log("adb 5037 占用者读不到路径，跳过检查 pid=" + pid); return; }
-        if (string.Equals(owner, adbExe, StringComparison.OrdinalIgnoreCase)) { BoostServer(pid); return; }
-        Log("adb 服务被别的程序占着：" + owner + "（pid " + pid + "），换成自带的");
+        string foreign = ForeignAdbOwner(true);
+        if (foreign.Length == 0) { BoostServer(pid); return; }
+        Log("adb 服务被别的程序占着（" + foreign + "），换成自带的");
         RunRaw(adbExe, new[] { "kill-server" }, 8000);
         RunRaw(adbExe, new[] { "start-server" }, 15000);
-        int pid2 = Port5037Pid();
-        string owner2 = "";
-        try { if (pid2 > 0) owner2 = Process.GetProcessById(pid2).MainModule.FileName; } catch { }
-        BoostServer(pid2);
-        Log("adb 服务已切换，现在 5037 占用者=" + (owner2.Length > 0 ? owner2 : "未知") + "（pid " + pid2 + "）");
+        BoostServer(Port5037Pid());
+        ForgetForeignCache();
+        string after = ForeignAdbOwner(true);
+        Log("adb 服务已切换，现在占用者=" + (after.Length > 0 ? after : "自带 adb"));
     }
 
     // 本机的 adb 服务和投屏进程都往上提半档优先级：它们要持续从手机读数据，
@@ -981,6 +1062,196 @@ public class MainForm : Form
                 p.PriorityClass = ProcessPriorityClass.AboveNormal;
         }
         catch { }
+    }
+
+    // 5037 是本机全局的：谁先把 adb 服务起起来，后面所有 adb 命令都走它。
+    // 手机助手类程序自带的 adb 版本旧，认不了新版无线调试（TLS），会让每个端口都"不是无线调试"。
+    // 认出被占用有两层办法：能拿到监听进程的 pid 就比路径；拿不到就问服务本身要协议版本。
+    // 后者是必需的——adb 的服务是 fork 出来的，套接字继承自已经退出的父进程，
+    // netstat 在这种端口上只能给出 pid 0，光比路径永远查不出来。
+    bool foreignChecked = false;
+    DateTime foreignAt = DateTime.MinValue;
+    int foreignTtl = 0;
+    string foreignName = "";
+
+    // 返回占用 5037 的外部程序名；用的是自带 adb（或没有服务）就返回空，认不出名字给"旧版 adb"。
+    // 结果留几秒：扫描每轮都要问一次，别每次都开进程、连端口；报"被占用"时缓存得短，换完服务要立刻变。
+    string ForeignAdbOwner(bool refresh = false)
+    {
+        if (adbExe == null) return "";
+        if (!refresh && foreignChecked && (DateTime.Now - foreignAt).TotalSeconds < foreignTtl) return foreignName;
+        foreignChecked = true;
+        foreignAt = DateTime.Now;
+        foreignName = ForeignAdbOwnerNow();
+        foreignTtl = foreignName.Length > 0 ? 4 : 20;
+        return foreignName;
+    }
+
+    void ForgetForeignCache() { foreignChecked = false; }
+
+    string ForeignAdbOwnerNow()
+    {
+        int pid = Port5037Pid();
+        if (pid > 0)
+        {
+            string owner = "";
+            try { owner = Process.GetProcessById(pid).MainModule.FileName; } catch { }
+            if (owner.Length == 0) return "";
+            return string.Equals(owner, adbExe, StringComparison.OrdinalIgnoreCase) ? "" : AdbOwnerName(owner);
+        }
+        if (Port5037Open()) return ServerIsOldAdb() ? OtherAdbName() : "";
+        return "";
+    }
+
+    // 端口上没人听就没有"占用"这回事，别把版本问不出来当成旧版
+    static bool Port5037Open()
+    {
+        try
+        {
+            var sk = new System.Net.Sockets.TcpClient();
+            try
+            {
+                var ar = sk.BeginConnect(System.Net.IPAddress.Loopback, 5037, null, null);
+                return ar.AsyncWaitHandle.WaitOne(400) && sk.Connected;
+            }
+            finally { sk.Close(); }
+        }
+        catch { }
+        return false;
+    }
+
+    // 服务答的协议版本比自带的低 → 是旧版 adb 占着端口。持平或更高不算占用：
+    // 新版服务认得了无线调试，硬说它有问题只会把人引偏。
+    bool ServerIsOldAdb()
+    {
+        int srv = ServerWireVersion();
+        int mine = OwnWireVersion();
+        return srv > 0 && mine > 0 && srv < mine;
+    }
+
+    static int ownWireVer = 0;
+    static bool ownWireRead = false;
+
+    // 自带 adb 的协议版本：`adb version` 里的 "1.0.41" 取 41，和服务端 host:version 同一个数
+    int OwnWireVersion()
+    {
+        if (ownWireRead) return ownWireVer;
+        ownWireRead = true;
+        if (adbExe == null) return 0;
+        try
+        {
+            var psi = new ProcessStartInfo(adbExe, "version")
+            {
+                UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true
+            };
+            using (var pr = Process.Start(psi))
+            {
+                string tx = pr.StandardOutput.ReadToEnd();
+                if (!pr.WaitForExit(4000)) { try { pr.Kill(); } catch { } }
+                var m = System.Text.RegularExpressions.Regex.Match(tx ?? "", @"1\.0\.(\d+)");
+                int v;
+                if (m.Success && int.TryParse(m.Groups[1].Value, out v)) ownWireVer = v;
+            }
+        }
+        catch { }
+        return ownWireVer;
+    }
+
+    // 直接问 5037 上的服务要版本（adb 的 host:version），拿不到就回 -1
+    static int ServerWireVersion()
+    {
+        try
+        {
+            using (var sk = new System.Net.Sockets.TcpClient())
+            {
+                sk.ReceiveTimeout = 800;
+                sk.SendTimeout = 500;
+                var ar = sk.BeginConnect(System.Net.IPAddress.Loopback, 5037, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(500)) return -1;
+                sk.EndConnect(ar);
+                var st = sk.GetStream();
+                byte[] req = System.Text.Encoding.ASCII.GetBytes("000chost:version");
+                st.Write(req, 0, req.Length);
+                st.Flush();
+                string head = ReadAscii(st, 8);
+                if (head == null || !head.StartsWith("OKAY")) return -1;
+                int len;
+                if (!int.TryParse(head.Substring(4, 4), System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out len) || len <= 0 || len > 64) return -1;
+                string body = ReadAscii(st, len);
+                if (body == null) return -1;
+                int comma = body.IndexOf(',');
+                if (comma > 0) body = body.Substring(0, comma);
+                int v;
+                if (int.TryParse(body, System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out v)) return v;
+            }
+        }
+        catch { }
+        return -1;
+    }
+
+    static string ReadAscii(System.IO.Stream st, int n)
+    {
+        byte[] buf = new byte[n];
+        int got = 0;
+        while (got < n)
+        {
+            int r;
+            try { r = st.Read(buf, got, n - got); } catch { return null; }
+            if (r <= 0) return null;
+            got += r;
+        }
+        return System.Text.Encoding.ASCII.GetString(buf, 0, n);
+    }
+
+    // 版本对不上但说不出是谁：从进程表里找个不是自带的 adb，报它的路径；找不到就算了
+    string OtherAdbOwnerPath()
+    {
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("adb"))
+            {
+                try
+                {
+                    string path = "";
+                    try { path = p.MainModule.FileName; } catch { }
+                    if (path.Length > 0 && !string.Equals(path, adbExe, StringComparison.OrdinalIgnoreCase)) return path;
+                }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
+        return "";
+    }
+
+    string OtherAdbName()
+    {
+        string path = OtherAdbOwnerPath();
+        return path.Length > 0 ? AdbOwnerName(path) : "旧版 adb";
+    }
+
+    // 报占用者要用人看得懂的名字：所有这类程序的可执行文件都叫 adb.exe，说文件名等于没说
+    static string AdbOwnerName(string path)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(path) ?? "";
+            var parts = dir.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = parts.Length - 1; i >= 0; i--)
+            {
+                string seg = parts[i];
+                if (seg.IndexOf(':') >= 0) break;
+                string low = seg.ToLowerInvariant();
+                if (low == "platform-tools" || low == "platform_tools" || low == "adb" || low == "bin" ||
+                    low == "engine" || low == "tools" || low == "x86" || low == "common files" ||
+                    low == "program files" || low == "appdata" || low == "local" || low == "roaming" ||
+                    low == "plugins" || low == "resources" || low == "files") continue;
+                return seg;
+            }
+        }
+        catch { }
+        return "旧版 adb";
     }
 
     static int Port5037Pid()
@@ -1118,6 +1389,7 @@ public class MainForm : Form
             if (ns != null)
             {
                 ns.deviceName = old.deviceName;
+                AddEvent(ns, "自动重连（第 " + gen + " 次）");
                 Log("自动重连：沿用原参数重启 " + old.deviceId + "（第 " + gen + " 次）");
                 ArmRespawn(ns);
             }
@@ -1130,7 +1402,29 @@ public class MainForm : Form
     // 想省电可以在「更多参数」里关掉。默认值走 "1"，没传也当开。
     static void AddAwakeOpts(List<string> a, Dictionary<string, object> p)
     {
+        // 投屏时关闭手机屏幕：画面继续，设备保持运行；不能再加 --keep-active，否则会把屏幕又点亮
+        if (Ps(p, "screenOff", "0") == "1")
+        {
+            a.Add("--turn-screen-off");
+            a.Add("--stay-awake");
+            a.Add("--power-off-on-close");   // 结束时保持黑屏，按电源键唤醒后回到手机正常锁屏
+            return;
+        }
         if (Ps(p, "keepActive", "1") != "0") a.Add("--keep-active");
+    }
+
+    // 每秒一行 FPS 输出，诊断面板据此显示实际帧率和跳帧。
+    // 输出行在 Spawn 里解析后会从掉线 tail 中剔除，不会挤掉真正的断开原因。
+    static void AddStatsOpts(List<string> a)
+    {
+        a.Add("--print-fps");
+    }
+
+    // 网络抖动大、偶发卡顿时加一点视频缓冲，代价是延迟；默认 0
+    static void AddBufferOpts(List<string> a, Dictionary<string, object> p)
+    {
+        int ms = 0;
+        if (int.TryParse(Ps(p, "buffer", "0"), out ms) && ms > 0) a.Add("--video-buffer=" + ms);
     }
 
     // 键盘通道：sys=系统注入（默认，不会顶掉手机软键盘，电脑能直接打中文）
@@ -1234,6 +1528,37 @@ public class MainForm : Form
             if (parts.Length < 2 || parts[1] != "device") continue;
             ids.Add(parts[0]);
         }
+        // 同一台设备可能同时挂着 IP:端口 和 mDNS 服务名两条传输（adb 自动连会这样）。
+        // 两条都列出来会像多了台一模一样的设备，这里只留 IP 那条；没有 IP 那条时保留 mDNS。
+        if (ids.Any(IsWirelessId) && ids.Any(x => x.IndexOf("_adb-tls-", StringComparison.OrdinalIgnoreCase) >= 0))
+        {
+            var mdnsAddr = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var ms = await Run(adbExe, new[] { "mdns", "services" }, 3000);
+            foreach (var line in (ms.text ?? "").Split('\n'))
+            {
+                var tk = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tk.Length < 3) continue;
+                string ep = tk[tk.Length - 1];
+                string[] hp = ep.Split(':');
+                if (hp.Length != 2 || hp[1].Length == 0 || !hp[1].All(char.IsDigit)) continue;
+                mdnsAddr[tk[0]] = ep;
+            }
+            var keep = new List<string>();
+            foreach (var id0 in ids)
+            {
+                if (id0.IndexOf("_adb-tls-", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string ep0;
+                    if (mdnsAddr.TryGetValue(id0.Split('.')[0], out ep0) && ids.Contains(ep0))
+                    {
+                        Log("同一台设备有两条无线传输，只留 " + ep0 + "，跳过 " + id0);
+                        continue;
+                    }
+                }
+                keep.Add(id0);
+            }
+            ids = keep;
+        }
         // 每台设备的几条查询同时发，逐台串行会让首屏等上十几秒
         var probes = ids.Select(async id =>
         {
@@ -1249,7 +1574,7 @@ public class MainForm : Form
                 {
                     var dc = new Dictionary<string, object>(cached);
                     dc["id"] = id;
-                    dc["via"] = id.Contains(":") ? "wireless" : "usb";
+                    dc["via"] = IsWirelessId(id) ? "wireless" : "usb";
                     string nm0 = Convert.ToString(dc["name"]);
                     if (nm0.Length == 0 || nm0 == id) dc["name"] = modelName;
                     return (object)dc;
@@ -1259,7 +1584,7 @@ public class MainForm : Form
             // 无线设备：adb devices 里的条目可能是「假在线」——连接早断了但状态还写着 device，
             // 光看状态字段永远显示已连接。主动发一条短命令探活，探不通就判离线并 disconnect，
             // 让这条陈旧条目从 adb 里彻底消失，后面自动重连才不会一直对着死地址空试。
-            if (id.Contains(":") && !id.StartsWith("emulator"))
+            if (IsWirelessId(id) && !id.StartsWith("emulator"))
             {
                 var alive = await AdbT(3000, id, "shell", "echo", "ok");
                 // 第一次探不通再补一次：正在投屏时 adb 可能短暂排队，一次超时不能直接判死
@@ -1280,7 +1605,7 @@ public class MainForm : Form
             {
                 var dc = new Dictionary<string, object>(cached);
                 dc["id"] = id;
-                dc["via"] = id.Contains(":") ? "wireless" : "usb";
+                dc["via"] = IsWirelessId(id) ? "wireless" : "usb";
                 if (modelName != id) dc["name"] = modelName;
                 return (object)dc;
             }
@@ -1297,7 +1622,7 @@ public class MainForm : Form
                 { "id", id },
                 { "name", shown },
                 { "android", Clean(v.text) },
-                { "via", id.Contains(":") ? "wireless" : "usb" },
+                { "via", IsWirelessId(id) ? "wireless" : "usb" },
                 { "rot", RotVal(rot.text) }
             };
             foreach (var kv in wm) d[kv.Key] = kv.Value;
@@ -1370,10 +1695,22 @@ public class MainForm : Form
     {
         var a = new List<string> { "-s", Ps(p, "id"), "--video-bit-rate=" + Ps(p, "bitrate", "12M"),
             "--max-fps=" + Ps(p, "fps", "60") };
+        // 镜像只按窗口能显示的尺寸编码：手机原生长边常是 3168/2400，不下发上限时
+        // 引擎会按原生尺寸编码，手机编码器被拖满，画面掉帧；窗口再大也看不见多出来的像素。
+        string szTxt = Ps(p, "size").Replace('×', 'x');
+        string[] wh = szTxt.Split('x');
+        int mw0, mh0;
+        if (wh.Length == 2 && int.TryParse(wh[0], out mw0) && int.TryParse(wh[1], out mh0))
+        {
+            int maxSide = Math.Max(mw0, mh0);
+            if (maxSide > 0) a.Add("--max-size=" + maxSide);
+        }
         if (Ps(p, "fullscreen") == "1") { a.Add("--fullscreen"); AddMonitorPos(a, p); }
         else AddWindowOpts(a, p);
         AddKeyboardOpts(a, p, false);
         AddAwakeOpts(a, p);
+        AddStatsOpts(a);
+        AddBufferOpts(a, p);
         int gen0 = 0; int.TryParse(Ps(p, "retryGen", "0"), out gen0);
         var res = Spawn(a, Ps(p, "id"),
             Ps(p, "fullscreen") == "1" ? "镜像 · 全屏" : "镜像",
@@ -1394,6 +1731,8 @@ public class MainForm : Form
         AddWindowOpts(a, p);
         AddKeyboardOpts(a, p, true);
         AddAwakeOpts(a, p);
+        AddStatsOpts(a);
+        AddBufferOpts(a, p);
         string app = Ps(p, "app");
         string appPkg = "";
         if (app.Length > 0)
@@ -1526,6 +1865,8 @@ public class MainForm : Form
         AddWindowOpts(a, p);
         AddKeyboardOpts(a, p, false);
         AddAwakeOpts(a, p);
+        AddStatsOpts(a);
+        AddBufferOpts(a, p);
         int genS = 0; int.TryParse(Ps(p, "retryGen", "0"), out genS);
         var res = Spawn(a, id, "放大", w + "×" + h, true, "", genS);
         var dict = res as Dictionary<string, object>;
@@ -1570,8 +1911,28 @@ public class MainForm : Form
                 retryGen = retryGen,
                 argv = new List<string>(a)
             };
+            // 诊断面板的静态配置：从这次实际启动参数解析，重连回放 argv 时自然保留
+            sess.cfgBitrate = ArgVal(a, "--video-bit-rate");
+            sess.cfgMaxFps = ArgVal(a, "--max-fps");
+            sess.cfgMaxSize = ArgVal(a, "--max-size");
+            sess.cfgVideoBuffer = ArgVal(a, "--video-buffer");
+            if (sess.cfgVideoBuffer.Length == 0) sess.cfgVideoBuffer = "0";
+            sess.cfgAudio = a.Contains("--no-audio") ? "off" : "on";
+            sess.cfgAudioCodec = ArgVal(a, "--audio-codec");
+            sess.cfgAudioKbps = ArgVal(a, "--audio-bit-rate");
+            sess.cfgAudioBuffer = ArgVal(a, "--audio-buffer");
+            sess.videoCodec = ArgVal(a, "--video-codec");
+            if (sess.videoCodec.Length == 0) sess.videoCodec = "h264";   // 引擎默认值，日志里没有时也能显示
+            if (sess.cfgAudio == "on")
+            {
+                if (sess.cfgAudioCodec.Length == 0) sess.cfgAudioCodec = "opus";
+                if (sess.cfgAudioKbps.Length == 0) sess.cfgAudioKbps = "128K";
+                if (sess.cfgAudioBuffer.Length == 0) sess.cfgAudioBuffer = "50";
+            }
+            sess.resolvedIp = (IsWirelessId(id) && id.Contains(":")) ? HostOf(id) : "";
             lock (SessionLock) Sessions.Add(sess);
             lastSpawned = sess;
+            AddEvent(sess, "启动 " + mode + (string.IsNullOrEmpty(size) ? "" : " · " + size));
             StartTrace(sess);   // 本机侧心跳：掉线时能回答是本地先断还是网络先抖
             // 物理键盘通道同一台设备只能有一路占着，第二路常常打不开
             bool kbdClash = kbdMode == "hw" && LiveSessions().Any(x => x.pid != pr.Id
@@ -1584,6 +1945,9 @@ public class MainForm : Form
             Action<string> take = line =>
             {
                 if (line == null) return;
+                // --print-fps 每秒一行，只更新面板数据；不能进 tail，否则掉线日志最后几行全是帧率
+                if (ParseFpsLine(sess, line)) return;
+                ParseSessionLogLine(sess, line);
                 lock (gate)
                 {
                     tail.Enqueue(line);
@@ -1608,11 +1972,41 @@ public class MainForm : Form
                 Log("scrcpy 退出 code=" + code);
                 int from = Math.Max(0, last.Length - 12);
                 for (int i = from; i < last.Length; i++) Log("  | " + last[i]);
+                bool abnormal = code != 0 && !sess.intentional;
+                AddEvent(sess, "退出 code=" + code + (abnormal ? "（异常）" : ""));
                 lock (SessionLock) Sessions.Remove(sess);
+                lock (statCtlLock) statWatch.Remove(sess.pid);
+                // 留一份结束快照，让已经打开的诊断面板能看到退出码、末尾日志和事件
+                try
+                {
+                    var ended = new EndedSession {
+                        at = DateTime.Now, pid = sess.pid, code = code, retryGen = sess.retryGen,
+                        deviceId = sess.deviceId, deviceName = sess.deviceName, mode = sess.mode, size = sess.size,
+                        abnormal = abnormal, intentional = sess.intentional
+                    };
+                    lock (sess.traceLock) ended.events = new List<string>(sess.events);
+                    ended.tail = new List<string>();
+                    for (int i = from; i < last.Length; i++) ended.tail.Add(last[i]);
+                    lock (statCtlLock)
+                    {
+                        endedSessions[sess.pid] = ended;
+                        var old = new List<int>();
+                        foreach (var kv in endedSessions)
+                            if ((DateTime.Now - kv.Value.at).TotalSeconds > 60) old.Add(kv.Key);
+                        foreach (var k in old) endedSessions.Remove(k);
+                        while (endedSessions.Count > 10)
+                        {
+                            int oldestK = 0; DateTime oldestT = DateTime.MaxValue;
+                            foreach (var kv in endedSessions) if (kv.Value.at < oldestT) { oldestT = kv.Value.at; oldestK = kv.Key; }
+                            if (oldestK == 0) break;
+                            endedSessions.Remove(oldestK);
+                        }
+                    }
+                }
+                catch { }
                 // 用户主动关的这一路，最后收尾时把设备参数还原。
                 // 异常断开（网络掉线这类）不走还原：中途把分辨率改回去、重连时再改回来，
                 // 正在跑的游戏会被迫重新布局甚至崩掉；重连直接沿用原参数，设备那边一点都不动。
-                bool abnormal = code != 0 && !sess.intentional;
                 if (sess.scaled && RestoreOnClose() && !abnormal && !HasLiveSession(sess.deviceId))
                 {
                     try
@@ -1651,6 +2045,62 @@ public class MainForm : Form
         catch (Exception ex) { return Err(ex.Message); }
     }
 
+    // scrcpy --print-fps 的输出：每秒一行「60 fps」或「60 fps (+2 frames skipped)」。
+    // 只更新面板状态，返回 true 让 take 不再把它塞进掉线日志的 tail。
+    static bool ParseFpsLine(CastSession s, string line)
+    {
+        string t = (line ?? "").Trim();
+        if (t.Length == 0 || t.IndexOf(" fps", StringComparison.Ordinal) < 0) return false;
+        // scrcpy 实际输出带日志前缀（INFO: 11 fps），不能只匹配裸行
+        var m = System.Text.RegularExpressions.Regex.Match(t, @"(\d+) fps(?: \(\+(\d+) frames skipped\))?\s*$");
+        if (!m.Success) return false;
+        int fps = 0, skip = 0;
+        int.TryParse(m.Groups[1].Value, out fps);
+        if (m.Groups[2].Success) int.TryParse(m.Groups[2].Value, out skip);
+        lock (s.traceLock)
+        {
+            s.fps = fps;
+            s.skippedLast = skip;
+            s.fpsAt = DateTime.Now;
+            s.skipRing.Add(skip);
+            while (s.skipRing.Count > 120) s.skipRing.RemoveAt(0);
+        }
+        return true;
+    }
+
+    static void ParseSessionLogLine(CastSession s, string line)
+    {
+        if (s == null || line == null) return;
+        string t = line.Trim();
+        if (t.Length == 0) return;
+        if (t.IndexOf("Texture", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var dim = System.Text.RegularExpressions.Regex.Match(t, @"(\d+x\d+)");
+            if (dim.Success) lock (s.traceLock) s.streamSize = dim.Groups[1].Value;
+        }
+        else if (t.IndexOf("Video codec:", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            string v = AfterColon(t);
+            if (v.Length > 0) lock (s.traceLock) s.videoCodec = v;
+        }
+        else if (t.IndexOf("Audio codec:", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            string v = AfterColon(t);
+            if (v.Length > 0) lock (s.traceLock) s.audioCodec = v;
+        }
+        else if (t.IndexOf("Audio stream error", StringComparison.OrdinalIgnoreCase) >= 0
+              || t.IndexOf("audio disabled", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            AddEvent(s, "音频：" + t);
+        }
+    }
+
+    static string AfterColon(string t)
+    {
+        int i = t.IndexOf(':');
+        return i >= 0 && i + 1 < t.Length ? t.Substring(i + 1).Trim() : "";
+    }
+
     void MarkIntentional(int pid)
     {
         lock (SessionLock) { foreach (var s in Sessions) if (s.pid == pid) s.intentional = true; }
@@ -1662,45 +2112,91 @@ public class MainForm : Form
     {
         string ip = HostOf(sess.deviceId);
         IPAddress ipa;
-        if (!IPAddress.TryParse(ip, out ipa)) return;
+        bool hasIp = IPAddress.TryParse(ip, out ipa);
         var cts = new CancellationTokenSource();
         sess.traceCts = cts;
         var ct = cts.Token;
         Task.Run(async () =>
         {
+            Process proc = null;
+            try { proc = Process.GetProcessById(sess.pid); } catch { }
+            TimeSpan lastCpu = TimeSpan.Zero;
+            DateTime lastCpuAt = DateTime.MinValue;
             int n = 0;
             while (!ct.IsCancellationRequested)
             {
-                try
+                if (hasIp)
                 {
-                    var sig = string.Join(", ",
-                        IPGlobalProperties.GetIPGlobalProperties()
+                    try
+                    {
+                        var conns = IPGlobalProperties.GetIPGlobalProperties()
                             .GetActiveTcpConnections()
                             .Where(c => c.RemoteEndPoint.Address.ToString() == ip)
                             .OrderBy(c => c.LocalEndPoint.Port)
-                            .Select(c => c.LocalEndPoint.Port + ">" + c.RemoteEndPoint.Port + " " + c.State)
-                            .ToArray());
-                    if (sig != sess.lastNetSig)
-                    {
-                        sess.lastNetSig = sig;
-                        AddTrace(sess, sess.netTrace, DateTime.Now.ToString("HH:mm:ss.fff") + " " +
-                            (sig.Length > 0 ? sig : "(没有到设备的 TCP 连接)"));
-                    }
-                }
-                catch { }
-                if (n % 4 == 0)
-                {
-                    string line;
-                    try
-                    {
-                        using (var pg = new Ping())
+                            .ToList();
+                        string sig = string.Join(", ", conns.Select(c =>
+                            c.LocalEndPoint.Port + ">" + c.RemoteEndPoint.Port + " " + c.State).ToArray());
+                        lock (sess.traceLock)
                         {
-                            var rep = pg.Send(ipa, 1200);
-                            line = rep.Status == IPStatus.Success ? ("通 " + rep.RoundtripTime + "ms") : rep.Status.ToString();
+                            sess.tcpConns = conns.Count;
+                            sess.tcpStates = string.Join(", ", conns.Select(c => c.State.ToString()).Distinct().ToArray());
+                            sess.tcpPorts.Clear();
+                            foreach (var c in conns)
+                            {
+                                int rp = c.RemoteEndPoint.Port;
+                                if (!sess.tcpPorts.Contains(rp)) sess.tcpPorts.Add(rp);
+                            }
+                        }
+                        if (sig != sess.lastNetSig)
+                        {
+                            sess.lastNetSig = sig;
+                            AddTrace(sess, sess.netTrace, DateTime.Now.ToString("HH:mm:ss.fff") + " " +
+                                (sig.Length > 0 ? sig : "(没有到设备的 TCP 连接)"));
                         }
                     }
-                    catch (Exception ex) { line = "失败 " + ex.Message; }
-                    AddTrace(sess, sess.pingTrace, DateTime.Now.ToString("HH:mm:ss") + " " + line);
+                    catch { }
+                    if (n % 4 == 0)
+                    {
+                        string line;
+                        int rtt = 0; bool ok = false;
+                        try
+                        {
+                            using (var pg = new Ping())
+                            {
+                                var rep = pg.Send(ipa, 1200);
+                                ok = rep.Status == IPStatus.Success;
+                                if (ok) rtt = (int)rep.RoundtripTime;
+                                line = ok ? ("通 " + rtt + "ms") : rep.Status.ToString();
+                            }
+                        }
+                        catch (Exception ex) { line = "失败 " + ex.Message; }
+                        AddTrace(sess, sess.pingTrace, DateTime.Now.ToString("HH:mm:ss") + " " + line);
+                        lock (sess.traceLock)
+                        {
+                            sess.pingSamples.Add(new PingSample { t = DateTime.Now, ms = rtt, ok = ok });
+                            while (sess.pingSamples.Count > 180) sess.pingSamples.RemoveAt(0);
+                        }
+                    }
+                }
+                // 电脑端投屏进程 CPU：1 秒一次，判断读取/渲染有没有被本机拖慢
+                if (n % 2 == 0 && proc != null)
+                {
+                    try
+                    {
+                        DateTime now = DateTime.Now;
+                        TimeSpan cpu = proc.TotalProcessorTime;
+                        if (lastCpuAt != DateTime.MinValue)
+                        {
+                            double secs = (now - lastCpuAt).TotalSeconds;
+                            if (secs > 0.2)
+                            {
+                                double pct = (cpu - lastCpu).TotalSeconds / secs / Environment.ProcessorCount * 100.0;
+                                lock (sess.traceLock) { sess.cpuPct = pct; sess.cpuAt = now; }
+                            }
+                        }
+                        lastCpu = cpu; lastCpuAt = now;
+                    }
+                    catch { }
                 }
                 n++;
                 try { await Task.Delay(500, ct); } catch { break; }
@@ -1727,8 +2223,35 @@ public class MainForm : Form
             foreach (var l in sess.netTrace) sb.AppendLine("  " + l);
             sb.AppendLine("[Ping，每 2 秒一次]");
             foreach (var l in sess.pingTrace) sb.AppendLine("  " + l);
+            sb.AppendLine("[最近 60 秒摘要]");
+            sb.AppendLine("  " + HostSummary(sess));
+            sb.AppendLine("[最近事件]");
+            foreach (var e in sess.events) sb.AppendLine("  " + e);
         }
         return sb.ToString();
+    }
+
+    // 诊断面板和掉线日志共用的一段短摘要
+    static string HostSummary(CastSession s)
+    {
+        int n = 0, bad = 0, maxMs = 0, sumMs = 0, jitterSum = 0, prev = -1, jitterN = 0;
+        DateTime since = DateTime.Now.AddSeconds(-60);
+        foreach (var p in s.pingSamples)
+        {
+            if (p.t < since) continue;
+            n++;
+            if (!p.ok) { bad++; continue; }
+            sumMs += p.ms;
+            if (p.ms > maxMs) maxMs = p.ms;
+            if (prev >= 0) { jitterSum += Math.Abs(p.ms - prev); jitterN++; }
+            prev = p.ms;
+        }
+        int okN = n - bad;
+        double avg = okN > 0 ? sumMs / (double)okN : 0;
+        double jitter = jitterN > 0 ? jitterSum / (double)jitterN : 0;
+        double loss = n > 0 ? bad * 100.0 / n : 0;
+        return string.Format("Ping 平均 {0:0.0}ms 最大 {1}ms 抖动 {2:0.0}ms 丢包 {3:0.0}%（{4} 个样本） · 投屏进程 CPU {5:0.0}%",
+            avg, maxMs, jitter, loss, n, s.cpuPct);
     }
 
     // 掉线那一瞬间从本机抓一次；等设备回来再抓，这个现场就没了
@@ -1848,6 +2371,565 @@ public class MainForm : Form
         catch (Exception ex) { Log("保存掉线现场失败: " + ex.Message); }
     }
 
+    // ---------- 诊断面板：会话快照与按需设备采样 ----------
+
+    object SessionStats(Dictionary<string, object> p)
+    {
+        int pid = 0; int.TryParse(Ps(p, "pid"), out pid);
+        bool watch = Ps(p, "watch") == "1";
+        CastSession s = null;
+        lock (SessionLock) { foreach (var x in Sessions) if (x.pid == pid) { s = x; break; } }
+        if (watch && s != null)
+        {
+            lock (statCtlLock) statWatch[pid] = DateTime.Now;
+            EnsureStatsLoop();
+        }
+        else if (!watch)
+        {
+            lock (statCtlLock) statWatch.Remove(pid);
+        }
+        if (s != null) return BuildStatsJson(s);
+        EndedSession e = null;
+        lock (statCtlLock) endedSessions.TryGetValue(pid, out e);
+        if (e != null && (DateTime.Now - e.at).TotalSeconds <= 60) return EndedJson(e);
+        return new Dictionary<string, object> { { "ok", true }, { "pid", pid }, { "found", false } };
+    }
+
+    // 面板打开时每设备约 5 秒采一次；关闭后 15 秒不再续期就停，空闲 30 秒后整个循环退出
+    void EnsureStatsLoop()
+    {
+        lock (statCtlLock)
+        {
+            if (statsLoopRunning) return;
+            statsLoopRunning = true;
+        }
+        Task.Run(async () =>
+        {
+            int idle = 0;
+            while (true)
+            {
+                await Task.Delay(1000);
+                List<int> pids = new List<int>();
+                lock (statCtlLock)
+                {
+                    var exp = new List<int>();
+                    foreach (var kv in statWatch) if ((DateTime.Now - kv.Value).TotalSeconds > 15) exp.Add(kv.Key);
+                    foreach (var x in exp) statWatch.Remove(x);
+                    foreach (var kv in statWatch) pids.Add(kv.Key);
+                    if (pids.Count == 0)
+                    {
+                        idle++;
+                        if (idle >= 30) { statsLoopRunning = false; return; }
+                        continue;
+                    }
+                    idle = 0;
+                }
+                var targets = new List<CastSession>();
+                lock (SessionLock) { foreach (var x in Sessions) if (pids.Contains(x.pid)) targets.Add(x); }
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in targets)
+                {
+                    string key = DevKey(t.deviceId);
+                    if (key.Length == 0 || seen.Contains(key)) continue;
+                    seen.Add(key);
+                    bool go;
+                    lock (devStatsLock)
+                    {
+                        if (devSampling.Contains(key)) continue;
+                        DateTime next;
+                        go = !devAttempt.TryGetValue(key, out next) || next <= DateTime.Now;
+                    }
+                    if (!go) continue;
+                    string k = key, adbId = t.deviceId;
+                    lock (devStatsLock)
+                    {
+                        if (devSampling.Count >= 2 || devSampling.Contains(k)) continue;
+                        devSampling.Add(k);
+                    }
+                    Task.Run(async () =>
+                    {
+                        try { await SampleDevice(k, adbId); }
+                        catch (Exception ex) { MarkDeviceFail(k, ex.Message); }
+                        finally { lock (devStatsLock) devSampling.Remove(k); }
+                    });
+                }
+            }
+        });
+    }
+
+    async Task SampleDevice(string key, string adbId)
+    {
+        string cmd = "echo @@W; cmd wifi status 2>/dev/null; echo @@N; cat /proc/net/dev 2>/dev/null; "
+            + "echo @@L; cat /proc/loadavg 2>/dev/null; "
+            + "echo @@M; grep -E '^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null; "
+            + "echo @@C; nproc 2>/dev/null; "
+            + "echo @@P; head -1 /proc/stat 2>/dev/null; "
+            + "echo @@I; ip -o -4 addr show wlan0 2>/dev/null; "
+            + "echo @@S; ss -tin 2>/dev/null | head -80";
+        var r = await AdbT(6000, adbId, "shell", cmd);
+        string text = r == null ? "" : (r.text ?? "");
+        if (text.IndexOf("@@W", StringComparison.Ordinal) < 0)
+        {
+            MarkDeviceFail(key, text.Trim().Length > 0 ? Clip(text.Trim(), 120) : "设备没响应");
+            return;
+        }
+
+        string[] marks = new string[] { "@@W", "@@N", "@@L", "@@M", "@@C", "@@P", "@@I", "@@S" };
+        string wifi = Section(text, "@@W", marks);
+        string net = Section(text, "@@N", marks);
+        string load = Section(text, "@@L", marks);
+        string mem = Section(text, "@@M", marks);
+        string nprocS = Section(text, "@@C", marks);
+        string statSec = Section(text, "@@P", marks);
+        string ipSec = Section(text, "@@I", marks);
+        string ssSec = Section(text, "@@S", marks);
+
+        bool viaDumpsys = false;
+        bool wifiBad;
+        lock (devStatsLock) devWifiCmdBad.TryGetValue(key, out wifiBad);
+        if (wifi.IndexOf("WifiInfo", StringComparison.OrdinalIgnoreCase) < 0 && !wifiBad)
+        {
+            var wf = await AdbT(5000, adbId, "shell",
+                "dumpsys wifi | grep -E 'mWifiInfo|Wi-Fi is|Link speed|RSSI|Frequency'");
+            string wt = wf == null ? "" : (wf.text ?? "");
+            if (wt.IndexOf("mWifiInfo", StringComparison.OrdinalIgnoreCase) >= 0) { wifi = wt; viaDumpsys = true; }
+            else lock (devStatsLock) devWifiCmdBad[key] = true;
+        }
+
+        bool hasWifi = wifi.Trim().Length > 0;
+        string ssid = Rgx(wifi, "SSID:\\s*\"([^\"]*)\"");
+        string bssid = Rgx(wifi, "BSSID:\\s*([0-9a-fA-F:]{17})");
+        int rssi = (int)Lng(Rgx(wifi, "RSSI:\\s*(-?\\d+)"));
+        int link = (int)Lng(Rgx(wifi, "Link speed:\\s*(\\d+)"));
+        int txLink = (int)Lng(Rgx(wifi, "Tx Link speed:\\s*(\\d+)"));
+        int rxLink = (int)Lng(Rgx(wifi, "Rx Link speed:\\s*(\\d+)"));
+        int freq = (int)Lng(Rgx(wifi, "Frequency:\\s*(\\d+)"));
+        long successTx = Lng(Rgx(wifi, "successfulTxPackets:\\s*(\\d+)"));
+        long retriedTotal = Lng(Rgx(wifi, "retriedTxPackets:\\s*(\\d+)"));
+        long lostTotal = Lng(Rgx(wifi, "lostTxPackets:\\s*(\\d+)"));
+        double retriedPs = Dbl(Rgx(wifi, "retriedTxPacketsPerSecond:\\s*([\\d.]+)"));
+        double lostPs = Dbl(Rgx(wifi, "lostTxPacketsPerSecond:\\s*([\\d.]+)"));
+
+        long rxBytes = 0, rxPkts = 0, txBytes = 0, txPkts = 0;
+        bool hasNet = false;
+        foreach (var l in net.Split('\n'))
+        {
+            if (l.IndexOf("wlan0:", StringComparison.Ordinal) < 0) continue;
+            var f = l.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (f.Length >= 11)
+            {
+                rxBytes = Lng(f[1]); rxPkts = Lng(f[2]);
+                txBytes = Lng(f[9]); txPkts = Lng(f[10]);
+                hasNet = true;
+            }
+            break;
+        }
+
+        bool hasLoad = false;
+        double l1 = 0, l5 = 0, l15 = 0;
+        var la = load.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (la.Length >= 3) { l1 = Dbl(la[0]); l5 = Dbl(la[1]); l15 = Dbl(la[2]); hasLoad = true; }
+
+        long memTotal = Lng(Rgx(mem, "MemTotal:\\s*(\\d+)"));
+        long memFree = Lng(Rgx(mem, "MemFree:\\s*(\\d+)"));
+        long memAvail = Lng(Rgx(mem, "MemAvailable:\\s*(\\d+)"));
+        long swapTotal = Lng(Rgx(mem, "SwapTotal:\\s*(\\d+)"));
+        long swapFree = Lng(Rgx(mem, "SwapFree:\\s*(\\d+)"));
+
+        // /proc/stat 第一行：cpu user nice system idle iowait irq softirq steal ...
+        long cpuTotal = 0, cpuIdle = 0;
+        bool hasCpu = false;
+        var cf = statSec.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (cf.Length >= 9 && cf[0] == "cpu")
+        {
+            for (int i = 1; i <= 8; i++) cpuTotal += Lng(cf[i]);
+            cpuIdle = Lng(cf[4]) + Lng(cf[5]);
+            hasCpu = true;
+        }
+        int nproc = (int)Lng(nprocS);
+        string ip = Rgx(ipSec, "inet\\s+([0-9.]+)");
+
+        var ssLines = new List<string>();
+        foreach (var l in ssSec.Split('\n'))
+        {
+            string t = l.Trim();
+            if (t.Length == 0) continue;
+            ssLines.Add(t);
+            if (ssLines.Count >= 80) break;
+        }
+
+        DateTime now = DateTime.Now;
+        double txMbps = 0, rxMbps = 0, retriedUse = retriedPs, lostUse = lostPs;
+        lock (devStatsLock)
+        {
+            DevTelemetry d;
+            if (!devStats.TryGetValue(key, out d)) { d = new DevTelemetry(); devStats[key] = d; }
+            DateTime prevT = d.prevAt;
+            long prevRetried = d.prevRetriedTotal, prevLost = d.prevLostTotal;
+            d.adbId = adbId; d.at = now; d.ok = true; d.err = ""; d.wifiViaDumpsys = viaDumpsys;
+            if (hasWifi)
+            {
+                if (ssid.Length > 0) d.ssid = ssid;
+                if (bssid.Length > 0) d.bssid = bssid;
+                if (rssi != 0) d.rssiDbm = rssi;
+                if (link > 0) d.linkMbps = link;
+                if (txLink > 0) d.txLinkMbps = txLink;
+                if (rxLink > 0) d.rxLinkMbps = rxLink;
+                if (freq > 0) { d.freqMhz = freq; d.band = freq >= 5925 ? "6GHz" : (freq >= 4900 ? "5GHz" : "2.4GHz"); }
+                if (successTx > 0) d.successTx = successTx;
+                if (retriedTotal > 0) d.retriedTotal = retriedTotal;
+                if (lostTotal > 0) d.lostTotal = lostTotal;
+                if (retriedPs > 0) d.retriedPerSec = retriedPs;
+                if (lostPs > 0) d.lostPerSec = lostPs;
+                d.rawWifi = Clip(wifi, 1200);
+            }
+            if (ip.Length > 0) d.ip = ip;
+            if (hasNet)
+            {
+                d.rxBytes = rxBytes; d.txBytes = txBytes; d.rxPackets = rxPkts; d.txPackets = txPkts;
+                if (prevT != DateTime.MinValue && d.prevTxBytes >= 0)
+                {
+                    double dt = (now - prevT).TotalSeconds;
+                    if (dt > 0.2)
+                    {
+                        txMbps = Math.Max(0, (txBytes - d.prevTxBytes) * 8.0 / dt / 1e6);
+                        rxMbps = Math.Max(0, (rxBytes - d.prevRxBytes) * 8.0 / dt / 1e6);
+                        d.txMbps = txMbps; d.rxMbps = rxMbps;
+                    }
+                }
+                d.prevTxBytes = txBytes; d.prevRxBytes = rxBytes;
+            }
+            // 没有 PerSecond 字段的 ROM：用累计计数差自己算
+            if (prevT != DateTime.MinValue)
+            {
+                double dt = (now - prevT).TotalSeconds;
+                if (dt > 0.2)
+                {
+                    if (retriedPs <= 0 && prevRetried >= 0 && retriedTotal >= prevRetried)
+                        d.retriedPerSec = Math.Max(0, (retriedTotal - prevRetried) / dt);
+                    if (lostPs <= 0 && prevLost >= 0 && lostTotal >= prevLost)
+                        d.lostPerSec = Math.Max(0, (lostTotal - prevLost) / dt);
+                }
+            }
+            if (retriedTotal >= 0) d.prevRetriedTotal = retriedTotal;
+            if (lostTotal >= 0) d.prevLostTotal = lostTotal;
+            d.prevAt = now;
+            if (hasLoad) { d.load1 = l1; d.load5 = l5; d.load15 = l15; }
+            if (memTotal > 0) d.memTotalKb = memTotal;
+            if (memFree > 0) d.memFreeKb = memFree;
+            if (memAvail > 0) d.memAvailKb = memAvail;
+            if (swapFree > 0) d.swapFreeKb = swapFree;
+            if (swapTotal > 0) { d.swapTotalKb = swapTotal; d.swapUsedKb = Math.Max(0, swapTotal - swapFree); }
+            if (hasCpu)
+            {
+                if (d.prevCpuTotal > 0 && cpuTotal > d.prevCpuTotal)
+                {
+                    long dt = cpuTotal - d.prevCpuTotal;
+                    long di = cpuIdle - d.prevCpuIdle;
+                    if (dt > 0) d.cpuPctDev = Math.Max(0, Math.Min(100, (1 - di / (double)dt) * 100.0));
+                }
+                d.prevCpuTotal = cpuTotal;
+                d.prevCpuIdle = cpuIdle;
+            }
+            if (nproc > 0) d.nproc = nproc;
+            d.ssLines = ssLines;
+            d.ssOk = ssLines.Count > 0;
+            d.rawSs = Clip(ssSec, 1200);
+            d.hist.Add(new DevSample {
+                t = now, txMbps = d.txMbps, rxMbps = d.rxMbps,
+                retriedPerSec = d.retriedPerSec, lostPerSec = d.lostPerSec });
+            while (d.hist.Count > 60) d.hist.RemoveAt(0);
+            devFailStreak[key] = 0;
+            devAttempt[key] = now.AddSeconds(5);
+            Log("stats sample " + key + " rssi=" + d.rssiDbm + " tx=" + d.txMbps.ToString("0.0")
+                + "Mbps retry=" + d.retriedPerSec.ToString("0.0") + "/s ss=" + ssLines.Count);
+        }
+        if (ip.Length > 0) ApplyResolvedIp(key, ip);
+    }
+
+    void MarkDeviceFail(string key, string err)
+    {
+        lock (devStatsLock)
+        {
+            DevTelemetry d;
+            if (!devStats.TryGetValue(key, out d)) { d = new DevTelemetry(); devStats[key] = d; }
+            d.err = err ?? "采样失败";
+            d.ok = false;
+            int streak;
+            devFailStreak.TryGetValue(key, out streak);
+            streak++;
+            devFailStreak[key] = streak;
+            devAttempt[key] = DateTime.Now.AddSeconds(streak >= 3 ? 15 : 5);
+            Log("stats sample fail " + key + " " + d.err + (streak >= 3 ? "（退避 15s）" : ""));
+        }
+    }
+
+    // mDNS 连接的设备没有 IP 可 ping；采样拿到 wlan0 地址后补上 RTT 和本机 TCP 端口
+    void ApplyResolvedIp(string key, string ip)
+    {
+        IPAddress ipa;
+        if (!IPAddress.TryParse(ip, out ipa)) return;
+        var list = new List<CastSession>();
+        lock (SessionLock) { foreach (var s in Sessions) if (DevKey(s.deviceId) == key) list.Add(s); }
+        foreach (var s in list)
+        {
+            if (!IsWirelessId(s.deviceId) || s.deviceId.Contains(":")) continue;
+            lock (s.traceLock) { if (string.IsNullOrEmpty(s.resolvedIp)) s.resolvedIp = ip; }
+            try
+            {
+                using (var pg = new Ping())
+                {
+                    var rep = pg.Send(ipa, 1000);
+                    bool ok = rep.Status == IPStatus.Success;
+                    lock (s.traceLock)
+                    {
+                        s.pingSamples.Add(new PingSample { t = DateTime.Now, ms = ok ? (int)rep.RoundtripTime : 0, ok = ok });
+                        while (s.pingSamples.Count > 180) s.pingSamples.RemoveAt(0);
+                    }
+                }
+                var conns = IPGlobalProperties.GetIPGlobalProperties()
+                    .GetActiveTcpConnections().Where(c => c.RemoteEndPoint.Address.ToString() == ip).ToList();
+                lock (s.traceLock)
+                {
+                    s.tcpConns = conns.Count;
+                    s.tcpStates = string.Join(", ", conns.Select(c => c.State.ToString()).Distinct().ToArray());
+                    s.tcpPorts.Clear();
+                    foreach (var c in conns) if (!s.tcpPorts.Contains(c.RemoteEndPoint.Port)) s.tcpPorts.Add(c.RemoteEndPoint.Port);
+                }
+            }
+            catch { }
+        }
+    }
+
+    Dictionary<string, object> BuildStatsJson(CastSession s)
+    {
+        string deviceId, deviceName, mode, size, cfgBitrate, cfgMaxFps, cfgMaxSize, cfgVideoBuffer, cfgAudio, cfgAudioCodec, cfgAudioKbps, cfgAudioBuffer;
+        string videoCodec, audioCodec, tcpStates, streamSize;
+        int fps, skippedLast, tcpConns, retryGen, displayId;
+        DateTime fpsAt, started;
+        double cpuPct;
+        List<int> skipRing, tcpPorts;
+        List<PingSample> pings;
+        List<string> events;
+        lock (s.traceLock)
+        {
+            deviceId = s.deviceId; deviceName = s.deviceName; mode = s.mode; size = s.size;
+            cfgBitrate = s.cfgBitrate; cfgMaxFps = s.cfgMaxFps; cfgMaxSize = s.cfgMaxSize; cfgVideoBuffer = s.cfgVideoBuffer; cfgAudio = s.cfgAudio;
+            cfgAudioCodec = s.cfgAudioCodec; cfgAudioKbps = s.cfgAudioKbps; cfgAudioBuffer = s.cfgAudioBuffer;
+            videoCodec = s.videoCodec; audioCodec = s.audioCodec; streamSize = s.streamSize;
+            fps = s.fps; fpsAt = s.fpsAt; skippedLast = s.skippedLast;
+            skipRing = new List<int>(s.skipRing);
+            pings = new List<PingSample>(s.pingSamples);
+            tcpConns = s.tcpConns; tcpStates = s.tcpStates; tcpPorts = new List<int>(s.tcpPorts);
+            events = new List<string>(s.events);
+            cpuPct = s.cpuPct;
+        }
+        started = s.startedAtDt; retryGen = s.retryGen; displayId = s.displayId;
+
+        DateTime since = DateTime.Now.AddSeconds(-60);
+        int n = 0, bad = 0, sum = 0, maxMs = 0, jitterSum = 0, jitterN = 0, prevMs = -1, cur = -1;
+        var pingSeries = new List<Dictionary<string, object>>();
+        foreach (var p in pings)
+        {
+            if (p.t < since) continue;
+            n++;
+            if (!p.ok) { bad++; pingSeries.Add(new Dictionary<string, object> { { "t", EpochMs(p.t) }, { "ms", null } }); continue; }
+            cur = p.ms; sum += p.ms; if (p.ms > maxMs) maxMs = p.ms;
+            if (prevMs >= 0) { jitterSum += Math.Abs(p.ms - prevMs); jitterN++; }
+            prevMs = p.ms;
+            pingSeries.Add(new Dictionary<string, object> { { "t", EpochMs(p.t) }, { "ms", p.ms } });
+        }
+        int okN = n - bad;
+        double avg = okN > 0 ? sum / (double)okN : 0;
+        double jitter = jitterN > 0 ? jitterSum / (double)jitterN : 0;
+        double loss = n > 0 ? bad * 100.0 / n : 0;
+
+        int skipPerMin = 0;
+        for (int i = Math.Max(0, skipRing.Count - 60); i < skipRing.Count; i++) skipPerMin += skipRing[i];
+        bool fpsOk = fpsAt != DateTime.MinValue && (DateTime.Now - fpsAt).TotalMilliseconds < 5000;
+
+        var txSeries = new List<Dictionary<string, object>>();
+        var retrySeries = new List<Dictionary<string, object>>();
+        Dictionary<string, object> devJson = null;
+        string key = DevKey(deviceId);
+        lock (devStatsLock)
+        {
+            DevTelemetry d;
+            if (devStats.TryGetValue(key, out d))
+            {
+                double age = d.at == DateTime.MinValue ? -1 : (DateTime.Now - d.at).TotalMilliseconds;
+                string rto = "", cwnd = "", ssthresh = "", retrans = "";
+                foreach (var line in d.ssLines)
+                {
+                    if (line.IndexOf("ESTAB", StringComparison.Ordinal) < 0) continue;
+                    bool hit = false;
+                    foreach (var pt in tcpPorts)
+                        if (line.IndexOf(":" + pt + " ", StringComparison.Ordinal) >= 0) { hit = true; break; }
+                    if (!hit) continue;
+                    rto = Rgx(line, "rto:([0-9.]+)");
+                    cwnd = Rgx(line, "cwnd:(\\d+)");
+                    ssthresh = Rgx(line, "ssthresh:(\\d+)");
+                    retrans = Rgx(line, "retrans:(\\d+/\\d+)");
+                    break;
+                }
+                double ratio = 0;
+                if (d.successTx + d.retriedTotal > 0) ratio = d.retriedTotal * 100.0 / (d.successTx + d.retriedTotal);
+                devJson = new Dictionary<string, object> {
+                    { "available", d.at != DateTime.MinValue },
+                    { "ok", d.ok },
+                    { "pending", d.prevTxBytes < 0 },
+                    { "stale", d.at != DateTime.MinValue && age > 12000 },
+                    { "ageMs", age < 0 ? 0 : (long)age },
+                    { "err", d.err ?? "" },
+                    { "ip", d.ip ?? "" },
+                    { "wifi", new Dictionary<string, object> {
+                        { "ssid", d.ssid }, { "bssid", d.bssid }, { "rssiDbm", d.rssiDbm },
+                        { "linkMbps", d.linkMbps }, { "txLinkMbps", d.txLinkMbps }, { "rxLinkMbps", d.rxLinkMbps },
+                        { "freqMhz", d.freqMhz }, { "band", d.band }, { "source", d.wifiViaDumpsys ? "dumpsys" : "cmd-wifi" } } },
+                    { "phy", new Dictionary<string, object> {
+                        { "txMbps", R1(d.txMbps) }, { "rxMbps", R1(d.rxMbps) },
+                        { "retriedPerSec", R1(d.retriedPerSec) }, { "lostPerSec", R1(d.lostPerSec) },
+                        { "retriedTotal", d.retriedTotal }, { "lostTotal", d.lostTotal },
+                        { "retryRatioPct", R1(ratio) } } },
+                    { "load", new Dictionary<string, object> {
+                        { "l1", R2(d.load1) }, { "l5", R2(d.load5) }, { "l15", R2(d.load15) }, { "nproc", d.nproc },
+                        { "cpuPct", R1(d.cpuPctDev) } } },
+                    { "mem", new Dictionary<string, object> {
+                        { "totalMb", d.memTotalKb / 1024 }, { "freeMb", d.memFreeKb / 1024 },
+                        { "availMb", d.memAvailKb / 1024 }, { "swapFreeMb", d.swapFreeKb / 1024 },
+                        { "swapTotalMb", d.swapTotalKb / 1024 }, { "swapUsedMb", d.swapUsedKb / 1024 } } },
+                    { "tcp", new Dictionary<string, object> {
+                        { "rto", rto }, { "cwnd", cwnd }, { "ssthresh", ssthresh }, { "retrans", retrans } } },
+                    { "raw", new Dictionary<string, object> { { "wifi", d.rawWifi ?? "" }, { "ss", d.rawSs ?? "" } } }
+                };
+                foreach (var h in d.hist)
+                {
+                    if (h.t < since) continue;
+                    txSeries.Add(new Dictionary<string, object> { { "t", EpochMs(h.t) }, { "mbps", R1(h.txMbps) } });
+                    retrySeries.Add(new Dictionary<string, object> { { "t", EpochMs(h.t) }, { "n", R1(h.retriedPerSec) } });
+                }
+            }
+        }
+        if (devJson == null)
+            devJson = new Dictionary<string, object> { { "available", false }, { "err", "还没有设备侧数据" } };
+
+        var result = new Dictionary<string, object> {
+            { "ok", true }, { "found", true }, { "pid", s.pid }, { "nowMs", EpochMs(DateTime.Now) },
+            { "deviceId", deviceId }, { "deviceName", string.IsNullOrEmpty(deviceName) ? deviceId : deviceName },
+            { "link", IsWirelessId(deviceId) ? "wireless" : "usb" },
+            { "mode", mode }, { "size", size }, { "streamSize", streamSize }, { "displayId", displayId },
+            { "uptimeSec", started == DateTime.MinValue ? 0 : (long)(DateTime.Now - started).TotalSeconds },
+            { "retryGen", retryGen },
+            { "cfg", new Dictionary<string, object> {
+                { "bitrateLabel", cfgBitrate }, { "bitrateMbps", R1(BitrateMbps(cfgBitrate)) },
+                { "maxFps", cfgMaxFps.Length > 0 ? cfgMaxFps : "不限" },
+                { "maxSize", cfgMaxSize }, { "videoBuffer", cfgVideoBuffer },
+                { "audio", cfgAudio }, { "audioCodec", cfgAudioCodec }, { "audioKbps", cfgAudioKbps },
+                { "audioBuffer", cfgAudioBuffer }, { "videoCodec", videoCodec }, { "audioCodecActual", audioCodec } } },
+            { "fps", new Dictionary<string, object> {
+                { "cur", fps }, { "skippedLast", skippedLast }, { "skippedPerMin", skipPerMin },
+                { "ageMs", fpsAt == DateTime.MinValue ? -1 : (long)(DateTime.Now - fpsAt).TotalMilliseconds },
+                { "available", fpsOk } } },
+            { "host", new Dictionary<string, object> {
+                { "available", IsWirelessId(deviceId) }, { "tcpConns", tcpConns }, { "tcpStates", tcpStates },
+                { "pingCurMs", cur }, { "pingAvgMs", R1(avg) }, { "pingMaxMs", maxMs },
+                { "jitterMs", R1(jitter) }, { "lossPct", R1(loss) }, { "windowSec", 60 }, { "samples", n },
+                { "cpuPct", R1(cpuPct) } } },
+            { "dev", devJson },
+            { "series", new Dictionary<string, object> { { "ping", pingSeries }, { "tx", txSeries }, { "retry", retrySeries } } },
+            { "events", events },
+            { "notes", new List<string> {
+                "吞吐取自设备 wlan0 计数，含重传、ACK 和其它应用流量，是近似值",
+                "Ping 是本机到设备的链路往返，不是画面端到端延迟",
+                "单连接 TCP 字节/RTT 需要管理员权限，当前用无线重试、丢包和套接字 RTO 代替" } }
+        };
+        return result;
+    }
+
+    Dictionary<string, object> EndedJson(EndedSession e)
+    {
+        int repl = 0;
+        lock (SessionLock)
+            foreach (var s in Sessions)
+                if (s.pid != e.pid && string.Equals(s.deviceId, e.deviceId, StringComparison.OrdinalIgnoreCase)) { repl = s.pid; break; }
+        return new Dictionary<string, object> {
+            { "ok", true }, { "pid", e.pid }, { "found", false },
+            { "ended", new Dictionary<string, object> {
+                { "atMs", EpochMs(e.at) }, { "code", e.code }, { "abnormal", e.abnormal },
+                { "intentional", e.intentional }, { "retryGen", e.retryGen },
+                { "deviceId", e.deviceId }, { "deviceName", e.deviceName },
+                { "mode", e.mode }, { "size", e.size },
+                { "tail", e.tail }, { "events", e.events }, { "replacementPid", repl } } }
+        };
+    }
+
+    object CopyText(Dictionary<string, object> p)
+    {
+        string text = Ps(p, "text");
+        if (text.Length == 0) return Err("没有可复制的内容");
+        if (text.Length > 65536) text = text.Substring(0, 65536);
+        for (int i = 0; i < 3; i++)
+        {
+            try { Clipboard.SetText(text); return new Dictionary<string, object> { { "ok", true } }; }
+            catch (Exception ex)
+            {
+                if (i == 2) return Err("剪贴板被占用：" + ex.Message);
+                Thread.Sleep(60);
+            }
+        }
+        return Err("剪贴板被占用");
+    }
+
+    static string Section(string text, string start, string[] all)
+    {
+        int i = text.IndexOf(start, StringComparison.Ordinal);
+        if (i < 0) return "";
+        i += start.Length;
+        int end = text.Length;
+        foreach (var m in all)
+        {
+            int j = text.IndexOf(m, i, StringComparison.Ordinal);
+            if (j >= 0 && j < end) end = j;
+        }
+        return text.Substring(i, end - i);
+    }
+
+    static string Rgx(string text, string pat)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", pat);
+        return m.Success && m.Groups.Count > 1 ? m.Groups[1].Value : "";
+    }
+
+    static long Lng(string s) { long v; long.TryParse((s ?? "").Trim(), out v); return v; }
+
+    static double Dbl(string s)
+    {
+        double v;
+        double.TryParse((s ?? "").Trim(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out v);
+        return v;
+    }
+
+    static string Clip(string s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Length <= max ? s : s.Substring(0, max) + "…";
+    }
+
+    static double R1(double v) { return double.IsNaN(v) || double.IsInfinity(v) ? 0 : Math.Round(v, 1); }
+    static double R2(double v) { return double.IsNaN(v) || double.IsInfinity(v) ? 0 : Math.Round(v, 2); }
+    static long EpochMs(DateTime t) { return (long)(t.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds; }
+
+    static double BitrateMbps(string v)
+    {
+        string t = (v ?? "").Trim().ToUpperInvariant();
+        double n = 0;
+        if (t.EndsWith("M")) { double.TryParse(t.Substring(0, t.Length - 1), out n); return n; }
+        if (t.EndsWith("K")) { double.TryParse(t.Substring(0, t.Length - 1), out n); return n / 1000.0; }
+        if (double.TryParse(t, out n)) return n / 1e6;
+        return 0;
+    }
+
     // 投屏异常断开：等设备回到 adb（最多一分钟），用原参数重连一次。
     // 只兜"同一地址回来"；发现它换了端口就停手，提示用户到无线页确认，别自作主张换地址连。
     async Task AutoReconnect(CastSession old, Func<Task<object>> again)
@@ -1918,6 +3000,14 @@ public class MainForm : Form
     {
         int c = (id ?? "").LastIndexOf(':');
         return c > 0 ? id.Substring(0, c) : (id ?? "");
+    }
+
+    // 无线设备有两种编号：IP:端口，或 adb 用 mDNS 自动连上来的服务名
+    // （形如 adb-<序列号>-<后缀>._adb-tls-connect._tcp）。后者没有冒号，不能当成 USB。
+    static bool IsWirelessId(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return false;
+        return id.Contains(":") || id.IndexOf("_adb-tls-", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     static string BaselineKey(string id)
@@ -2152,7 +3242,7 @@ public class MainForm : Form
         {
             // 必须先 Trim：Windows 下行尾带回车，不去掉会让状态值变成「device\r」，一台都判不出来
             var p = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (p.Length >= 2 && p[1] == "device" && p[0].Contains(":")) list.Add(p[0]);
+            if (p.Length >= 2 && p[1] == "device" && IsWirelessId(p[0])) list.Add(p[0]);
         }
         return list;
     }
@@ -2231,6 +3321,14 @@ public class MainForm : Form
         RelocateState busy;
         bool finding = RelocBusy(out busy);
         if (!finding) await CleanupOffline();   // 查找中别去动 adb，免得打断正在验证的连接
+
+        // 手机助手类程序常把 5037 抢去跑自己的 adb；它不支持新版无线调试，会让所有端口都"不是无线调试"。
+        // 普通扫描且没有投屏在跑时，先换回自带 adb，再开始发现和验证。
+        if (!finding && !light && LiveSessions().Count == 0 && ForeignAdbOwner().Length > 0)
+        {
+            EnsureOwnAdbServer();
+            uiNotice = "检测到 5037 被其它程序的 adb 服务占用，已换回自带 adb。";
+        }
 
         var connected = await ConnectedWireless();
         var connIps = new HashSet<string>(connected.Select(c => c.Split(':')[0]), StringComparer.OrdinalIgnoreCase);
@@ -2489,19 +3587,57 @@ public class MainForm : Form
         PortGate.Release();
         // 扫描不许把设备悄悄连上：验完就断开（客户端超时被杀时，服务端可能还留着这条）
         try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
-        PortCachePut(addr, verdict);
+
+        // 端口开着但 adb 连不上，不一定是厂商服务占端口；也可能是 5037 被手机助手的 adb 抢走。
+        // 没有投屏在跑时先换回自带 adb 再试一次；有投屏就不动，只报"adb 服务被占用"。
+        if (verdict == "notadb")
+        {
+            string foreign = ForeignAdbOwner();
+            if (foreign.Length > 0)
+            {
+                if (LiveSessions().Count == 0)
+                {
+                    EnsureOwnAdbServer();
+                    await Task.Delay(500);
+                    await PortGate.WaitAsync();
+                    try
+                    {
+                        var cv2 = await ConnectVerified(addr, 2500, 3000);
+                        verdict = (bool)cv2["ok"] ? "adb"
+                            : ("unauthorized".Equals(Convert.ToString(cv2["state"])) ? "auth" : "notadb");
+                    }
+                    catch { verdict = "notadb"; }
+                    PortGate.Release();
+                    try { await Run(adbExe, new[] { "disconnect", addr }, 3000); } catch { }
+                    if (verdict == "notadb" && ForeignAdbOwner().Length > 0) verdict = "foreignadb";
+                }
+                else verdict = "foreignadb";
+            }
+        }
+
+        // 外部 adb 占用是临时状态，不写进 10 分钟缓存，否则换回自带 adb 后还会显示旧结论。
+        if (verdict != "foreignadb") PortCachePut(addr, verdict);
         return verdict;
     }
 
     static string PortReason(string verdict, bool moved)
     {
         if (moved) return "moved";
-        return verdict == "adb" ? "manual" : (verdict == "auth" ? "auth" : (verdict == "notadb" ? "notadb" : "port"));
+        if (verdict == "adb") return "manual";
+        if (verdict == "auth") return "auth";
+        if (verdict == "foreignadb") return "foreign";
+        return verdict == "notadb" ? "notadb" : "port";
     }
 
-    static string PortNote(string verdict, bool moved, string hip)
+    string PortNote(string verdict, bool moved, string hip)
     {
         if (verdict == "auth") return "找到了这台，但要重新配对：在手机无线调试页用配对码再配一次。";
+        if (verdict == "foreignadb")
+        {
+            string who = ForeignAdbOwner();
+            if (who.Length == 0) who = "旧版 adb";
+            return "端口能连，问题在本机：5037 上的 adb 服务是「" + who + "」起的旧版本，认不了新版无线调试。点「换回自带 adb」后重新扫描；正在投屏时先结束这一路。";
+        }
         if (verdict == "notadb") return moved
             ? ("它的 IP 是 " + hip + "，但这个端口不是无线调试；点「找端口」找回真正的端口。")
             : "这个端口开着，但不是无线调试（厂商自带的服务也占这种端口）；点「找端口」找回真正的端口。";
@@ -2563,10 +3699,23 @@ public class MainForm : Form
     async Task<object> RestartAdb()
     {
         if (adbExe == null) return Err("没找到 adb");
+        if (LiveSessions().Count > 0) return Err("正在投屏，先结束这一路再换 adb 服务，避免把当前连接打断");
+        string foreign = ForeignAdbOwner();
         await Run(adbExe, new[] { "kill-server" }, 5000);
         await Task.Delay(800);
+        ForgetForeignCache();
         var s = await Run(adbExe, new[] { "start-server" }, 8000);
-        return new Dictionary<string, object> { { "ok", s.ok }, { "text", s.ok ? "ok" : s.text } };
+        BoostServer(Port5037Pid());
+        ForgetForeignCache();
+        string now = ForeignAdbOwner(true);
+        string text = s.ok
+            ? (foreign.Length > 0
+                ? "已换回自带 adb（原来被「" + foreign + "」占用）"
+                : "已重启自带 adb")
+            : s.text;
+        if (s.ok && now.Length > 0)
+            text = "adb 服务仍是「" + now + "」的旧版本，它一退出就会再来抢：把那个程序连同后台服务关掉，再点一次";
+        return new Dictionary<string, object> { { "ok", s.ok && now.Length == 0 }, { "text", text } };
     }
 
     // ── 无线身份：同网段 MAC / 网段 / 连接验证 ──
@@ -2761,7 +3910,7 @@ public class MainForm : Form
         foreach (var line in (r.text ?? "").Split('\n'))
         {
             var p = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (p.Length >= 2 && p[1] == "offline" && p[0].Contains(":"))
+            if (p.Length >= 2 && p[1] == "offline" && IsWirelessId(p[0]))
             {
                 await Run(adbExe, new[] { "disconnect", p[0] }, 3000);
                 Log("清理 offline 无线记录 " + p[0]);
@@ -3213,7 +4362,7 @@ public class MainForm : Form
                 var tk = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                 if (tk.Length < 2 || tk[0] == "List" || tk[0].Contains("of")) continue;
                 if (tk[1] != "device" && tk[1] != "offline" && tk[1] != "unauthorized") continue;
-                devs.Add(new Dictionary<string, object> { { "id", tk[0] }, { "via", tk[0].Contains(":") ? "wireless" : "usb" }, { "state", tk[1] } });
+                devs.Add(new Dictionary<string, object> { { "id", tk[0] }, { "via", IsWirelessId(tk[0]) ? "wireless" : "usb" }, { "state", tk[1] } });
             }
         }
 
@@ -3263,7 +4412,7 @@ public class MainForm : Form
     {
         string id = Ps(p, "id");
         if (id.Length == 0) return Err("先在「投屏」页选一台设备");
-        if (id.Contains(":")) return Err("这台已经是无线连接了，换一台用数据线连着的");
+        if (IsWirelessId(id)) return Err("这台已经是无线连接了，换一台用数据线连着的");
         if (adbExe == null) return Err("没找到 adb");
 
         string ip = "";
@@ -3724,6 +4873,23 @@ public class MainForm : Form
     async Task<object> WifiDisconnect(Dictionary<string, object> p)
     {
         string addr = Ps(p, "addr").Trim();
+        // mDNS 自动连上的设备编号是一长串服务名，adb disconnect 不认；先查出它当前地址再断
+        if (addr.IndexOf("_adb-tls-", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            string svc = addr.Split('.')[0];
+            try
+            {
+                var md = await Run(adbExe, new[] { "mdns", "services" }, 4000);
+                foreach (var line in (md.text ?? "").Split('\n'))
+                {
+                    if (line.IndexOf(svc, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var hp = line.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+                        .FirstOrDefault(x => x.Count(ch => ch == ':') == 1 && x.Split(':')[1].Length > 0 && x.Split(':')[1].All(char.IsDigit));
+                    if (!string.IsNullOrEmpty(hp)) { addr = hp; Log("断开 mDNS 设备 " + svc + " → " + addr); break; }
+                }
+            }
+            catch { }
+        }
         var a = new List<string> { "disconnect" };
         if (addr.Length > 0) a.Add(addr);
         var r = await Run(adbExe, a, 10000);
@@ -3840,7 +5006,11 @@ public class MainForm : Form
             if (!ok)
             {
                 string st = Convert.ToString(verify["state"]);
-                steps.Add(st == "unauthorized" ? "找到了设备，但需要授权/重新配对" : "这个端口不是可用的无线调试");
+                steps.Add(st == "unauthorized"
+                    ? "找到了设备，但需要授权/重新配对"
+                    : (ForeignAdbOwner().Length > 0
+                        ? "本机 5037 仍被其它程序的 adb 占用，这个端口连不上"
+                        : "这个端口不是可用的无线调试"));
             }
         }
         steps.Add(ok ? "已连上 " + target : "连接失败：" + (cr.text.Trim().Length > 0 ? cr.text.Trim() : "没有回应"));

@@ -13,6 +13,21 @@ if (-not $env:HTTPS_PROXY) {
   if ($probe) { $env:HTTPS_PROXY = "http://127.0.0.1:7897" }
 }
 
+# 全局约束：Cloudflare 用 API Token，不走浏览器 OAuth。
+# Token 放在 ~/.cloudflare/api-token，账户号从 wrangler 缓存补上；没有文件时才退回原登录态。
+$tokenFile = Join-Path $env:USERPROFILE ".cloudflare\api-token"
+if (-not $env:CLOUDFLARE_API_TOKEN -and (Test-Path $tokenFile)) {
+  $env:CLOUDFLARE_API_TOKEN = (Get-Content $tokenFile -Raw).Trim()
+  Write-Host "已读取 Cloudflare API Token（不显示内容）"
+}
+$acctFile = Join-Path $PSScriptRoot ".wrangler\cache\pages.json"
+if (-not $env:CLOUDFLARE_ACCOUNT_ID -and (Test-Path $acctFile)) {
+  try {
+    $acct = (Get-Content $acctFile -Raw | ConvertFrom-Json).account_id
+    if ($acct) { $env:CLOUDFLARE_ACCOUNT_ID = ([string]$acct).Trim() }
+  } catch { }
+}
+
 $pub = "cloudflare-pages\public"
 foreach ($f in @("index.html", "update.json")) {
   if (-not (Test-Path (Join-Path $pub $f))) { throw "缺少 $f，先跑 publish.ps1" }

@@ -159,11 +159,43 @@ button,select,input{font:inherit;color:inherit}
 .casts{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
 .casts .ch{font-size:11.5px;color:var(--text-3);letter-spacing:1px;margin-bottom:9px}
 .casts .none{font-size:12px;color:var(--text-3);line-height:1.7;padding:4px 0}
-.casts .cast{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--sunken);border-radius:13px;padding:9px 11px;margin-bottom:7px}
+.casts .cast{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--sunken);border-radius:13px;padding:9px 11px;margin-bottom:7px;cursor:pointer;transition:.16s}
+.casts .cast:hover{border-color:var(--accent-line);background:var(--surface)}
+.casts .cast.on{border-color:var(--accent-line);background:var(--accent-soft)}
 .casts .cn{font-size:12.5px;font-weight:600}
 .casts .cm{font-size:11.5px;color:var(--text-3);margin-top:2px;font-variant-numeric:tabular-nums}
 .casts .cast .sp{flex:1}
 .casts .cast .b2{padding:5px 11px;font-size:11.5px}
+.casts .casti{width:22px;height:22px;border-radius:50%;border:1px solid var(--line-strong);background:var(--surface);color:var(--text-3);font-size:11px;font-weight:700;cursor:pointer;transition:.16s;flex-shrink:0;line-height:1;padding:0}
+.casts .casti:hover,.casts .casti.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+/* ── 投屏诊断：贴着正在投屏列表的小面板 ── */
+#statPop{position:fixed;z-index:1000;width:300px;max-height:min(74vh,560px);overflow:auto;background:var(--surface);border:1px solid var(--line-strong);border-radius:14px;box-shadow:0 24px 60px -22px rgba(9,28,46,.55);padding:12px 13px 10px;display:none;font-size:11.5px;color:var(--text-2)}
+#statPop.show{display:block;visibility:hidden}
+#statPop.show[data-side]{visibility:visible}
+.sp-h{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px}
+.sp-h b{font-size:12.5px;color:var(--text)}
+.sp-h span{display:block;color:var(--text-3);font-size:11px;margin-top:2px;line-height:1.5}
+.sp-x{margin-left:auto;width:24px;height:24px;border:0;background:transparent;color:var(--text-3);font-size:17px;line-height:1;cursor:pointer;border-radius:7px;flex-shrink:0}
+.sp-x:hover{background:var(--sunken);color:var(--text)}
+.sp-stale{margin:4px 0 7px;padding:6px 8px;border-radius:8px;background:var(--warn-soft);color:#6d4a15;line-height:1.5;font-size:11px}
+.sp-stale.bad{background:var(--bad-soft);color:#7c2f31}
+.sp-sec{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
+.sp-sec h4{margin:0 0 5px;font-size:10.5px;color:var(--text-3);font-weight:600;letter-spacing:.6px}
+.sp-row{display:flex;align-items:baseline;gap:8px;line-height:1.7}
+.sp-row .k{color:var(--text-3);flex:0 0 96px}
+.sp-row .v{margin-left:auto;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--text);text-align:right;overflow-wrap:anywhere}
+.sp-row .v.ok{color:var(--accent)}.sp-row .v.warn{color:var(--warn)}.sp-row .v.bad{color:var(--bad)}.sp-row .v.dim{color:var(--text-3)}
+.spark{display:block;width:100%;height:32px;margin:4px 0 1px}
+.sp-note{color:var(--text-3);line-height:1.7;margin-top:6px}
+.sp-help{margin-top:8px;font-size:11px;color:var(--text-3)}
+.sp-help summary{cursor:pointer;color:var(--text-2)}
+.sp-help .sp-note{margin-top:5px}
+.sp-f{position:sticky;bottom:-10px;z-index:1;display:flex;align-items:center;gap:8px;margin-top:9px;padding:8px 0 2px;border-top:1px solid var(--line);background:var(--surface)}
+.sp-f .sp{flex:1}
+.sp-f .b2{padding:5px 10px;font-size:11px}
+.sp-evt{font-family:var(--mono);font-size:10.5px;color:var(--text-2);line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+.sp-tail{font-family:var(--mono);font-size:10px;color:var(--text-3);line-height:1.55;white-space:pre-wrap;max-height:92px;overflow:auto;background:var(--sunken);border-radius:7px;padding:6px 7px;margin-top:4px}
 
 /* ── 信息提示：悬浮/点击显示说明，保持界面精简 ── */
 .tip{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);color:var(--text-3);font-size:10px;font-weight:700;cursor:help;position:relative;background:var(--surface);flex-shrink:0;line-height:1;vertical-align:middle;transition:.16s}
@@ -409,6 +441,8 @@ button,select,input{font:inherit;color:inherit}
           <div class="fields">
             <div class="field"><label>码率</label><select id="fBitrate"><option>12M</option><option>8M</option><option>16M</option><option>24M</option></select></div>
             <div class="field"><label>帧率</label><select id="fFps"><option value="60">60</option><option value="30">30（更省性能）</option></select></div>
+            <div class="field"><label>视频缓冲<span class="tip inline">?<span class="bub"><p>默认 0，延迟最低。网络有抖动、偶发卡顿时加到 100 毫秒，画面会晚一点但更稳；玩游戏先留 0。</p></span></span></label><select id="fBuf"><option value="0">0（最低延迟）</option><option value="50">50 毫秒</option><option value="100">100 毫秒</option><option value="200">200 毫秒</option></select></div>
+            <div class="field"><label>手机屏幕<span class="tip inline">?<span class="bub"><p><b>保持常亮</b>：投屏期间不让手机自动息屏/锁屏，默认。</p><p><b>投屏时关闭</b>：手机屏幕黑掉，电脑画面继续；适合边充边看。结束投屏时手机保持黑屏，按电源键唤醒后就是手机正常的锁屏；想结束时直接亮屏就选「保持常亮」或「交给设备」。设备没插电时系统仍可能休眠。</p><p><b>交给设备</b>：不加干预，按手机自己的息屏和锁屏设置走；锁屏后投屏画面可能停住。</p></span></span></label><select id="fScreen"><option value="keep">保持常亮（默认）</option><option value="off">投屏时关闭（画面继续）</option><option value="system">交给设备</option></select></div>
             <div class="field"><label>窗口宽度（留空自动）</label><input id="fWinW" placeholder="如 720" maxlength="5" style="width:104px"></div>
           </div>
         </div>
@@ -419,9 +453,8 @@ button,select,input{font:inherit;color:inherit}
           </div>
           <div class="wr" style="margin-top:12px;gap:18px;flex-wrap:wrap">
             <label class="chk"><input type="checkbox" id="chkTop"> 窗口置顶</label>
-            <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（用 Alt+Q 关闭）</label>
+            <label class="chk"><input type="checkbox" id="chkBorderless"> 无边框（默认不勾选；勾选后隐藏标题栏）</label>
             <label class="chk"><input type="checkbox" id="chkLegacy"> 电脑内容粘不进手机时勾选</label>
-            <label class="chk"><input type="checkbox" id="chkKeepAwake"> 投屏期间不让设备息屏</label>
           </div>
         </div>
       </div>
@@ -458,6 +491,17 @@ button,select,input{font:inherit;color:inherit}
   </div>
 </div>
 <div class="toast" id="toast"></div>
+
+<div id="statPop" role="dialog" aria-label="这一路的网络诊断">
+  <div class="sp-h"><div><b id="spName">—</b><span id="spMeta">—</span></div>
+    <button class="sp-x" id="spClose" title="关闭" aria-label="关闭">×</button></div>
+  <div class="sp-stale" id="spStale" hidden></div>
+  <div id="spBody"><div class="sp-note">正在读取这一路的数据…</div></div>
+  <details class="sp-help"><summary>怎么看这些数</summary>
+    <div class="sp-note">负载包含等待 I/O 的任务，不等于 CPU 占用，先看 CPU% 和交换使用；音频断续再看无线重试/丢包和 Ping 抖动；画面卡顿看实际帧率、跳帧和投屏进程 CPU，静止画面帧率低是正常的；断线看最近事件、TCP 状态和套接字 RTO。吞吐取自设备 wlan0，含重传和其它应用流量，是近似值。</div>
+  </details>
+  <div class="sp-f"><span class="sp-note" id="spUpd">—</span><span class="sp"></span><button class="b2" id="spCopy">复制诊断</button></div>
+</div>
 
 <div class="modal" id="aboutModal" hidden>
   <div class="mask"></div>
@@ -522,7 +566,11 @@ function winOpts(forWindowed) {
   // 键盘通道和粘贴方式跟场景无关，先挂上，别让全屏那条提前 return 漏掉
   const kb = $('fKbd'); o.kbd = kb ? kb.value : 'sys';
   if ($('chkLegacy') && $('chkLegacy').checked) o.legacyPaste = '1';
-  if ($('chkKeepAwake') && !$('chkKeepAwake').checked) o.keepActive = '0';
+  const sc = $('fScreen') ? $('fScreen').value : 'keep';
+  if (sc === 'off') o.screenOff = '1';
+  else if (sc === 'system') o.keepActive = '0';
+  const buf = $('fBuf') ? $('fBuf').value : '0';
+  if (buf && buf !== '0') o.buffer = buf;
   if (forWindowed === false) return o;   // 全屏时不给窗口尺寸/边框参数，交给 scrcpy 铺满目标屏
   if ($('chkTop') && $('chkTop').checked) o.alwaysOnTop = '1';
   if ($('chkBorderless') && $('chkBorderless').checked) o.borderless = '1';
@@ -540,6 +588,8 @@ const api = {
   windows: () => call('windows'),
   closeWindows: () => call('close-windows'),
   sessions: () => call('sessions'),
+  sessionStats: (pid, watch) => call('session-stats', { pid: String(pid), watch: watch ? '1' : '0' }),
+  copyText: (text) => call('copy-text', { text }),
   closeSession: (pid) => call('close-session', { pid: String(pid) }),
   vdPullback: (o) => call('vd-pullback', { id: o.id, displayId: String(o.displayId), pkg: o.pkg }),
   connDiag: () => call('conn-diag'),
@@ -703,7 +753,8 @@ function modeDesc() {
 function renderTop() {
   const d = cur();
   $('topLink').className = 'link' + (d ? '' : ' off');
-  $('topLink').innerHTML = '<i></i><span>' + (d ? (d.via === 'usb' ? '有线已连接' : '无线已连接 · ' + d.id) : '未连接设备') + '</span>';
+  const mdnsTop = d && /_adb-tls-/.test(String(d.id || ''));
+  $('topLink').innerHTML = '<i></i><span>' + (d ? (d.via === 'usb' ? '有线已连接' : (mdnsTop ? '无线已连接（自动发现）' : '无线已连接 · ' + d.id)) : '未连接设备') + '</span>';
   $('navMeta').innerHTML = `投屏目标 <b>${mon.w}×${mon.h}</b>${monitors.length > 1 ? ' · ' + esc(mon.primary ? '主屏' : '副屏') : ''}<br>引擎 <b>${esc(window.__engineVer || '—')}</b><br>已开窗口 <b id="navWins">—</b>`;
 }
 function renderDevs() {
@@ -716,7 +767,9 @@ function renderDevs() {
     const dpiTxt = (d.currentDpi && d.physicalDpi && d.currentDpi !== d.physicalDpi)
       ? `${d.currentDpi}dpi · 物理 ${d.physicalDpi}` : `${d.currentDpi || d.physicalDpi || '?'}dpi`;
     const viaTxt = d.via === 'usb' ? '有线' : '无线';
-    const addrRow = d.via === 'wireless' ? `<div class="mt addr">${esc(d.id)}</div>` : '';
+    // mDNS 自动连上的无线设备，编号是一长串服务名，列表里没必显示；写成自动发现
+    const isMdns = /_adb-tls-/.test(String(d.id || ''));
+    const addrRow = d.via === 'wireless' ? `<div class="mt addr">${isMdns ? '无线自动发现' : esc(d.id)}</div>` : '';
     const disBtn = d.via === 'wireless' ? `<button class="b2" data-dis="${esc(d.id)}" title="断开无线连接">断开</button>` : '';
     return `<div class="row ${d.id === devId ? 'on' : ''}" data-id="${esc(d.id)}">
       <span class="ic">${d.via === 'usb' ? IC.usb : IC.wifi}</span>
@@ -798,6 +851,8 @@ function renderOut() {
   $('btnGo').disabled = !live;
 }
 let castCount = 0;
+// 诊断面板状态：statsPid 为当前查看的投屏进程
+let statsPid = 0, statsTimer = 0, statsBusy = false, statsLast = null, statsEndedAt = 0;
 const pullNotified = new Set();
 // 应用被手机侧点开时，系统会把那个 task 挪回主屏，虚拟屏只剩壁纸；这里给出提示和一键拉回
 function paintPullHint(arr) {
@@ -843,17 +898,35 @@ async function renderWins() {
     box.innerHTML = '<div class="ch">正在投屏</div><div class="none">还没有投屏。选好设备与档位，点右下角开始。</div>';
     return 0;
   }
-  box.innerHTML = '<div class="ch">正在投屏</div>' + arr.map(x =>
-    `<div class="cast"><div><div class="cn">${esc(x.deviceName || x.deviceId)}</div>
+  box.innerHTML = '<div class="ch">正在投屏</div>' + arr.map(x => {
+    const on = statsPid && x.pid === statsPid;
+    return `<div class="cast${on ? ' on' : ''}" data-pid="${x.pid}" data-dev="${esc(x.deviceId || '')}">
+      <div><div class="cn">${esc(x.deviceName || x.deviceId)}</div>
       <div class="cm">${esc(x.mode)} · ${esc(x.size || '—')} · ${esc(x.startedAt)}${x.kbd === 'hw' ? ' · 物理键盘' : ''}</div></div>
-      <span class="sp"></span><button class="b2" data-pid="${x.pid}">关闭</button></div>`).join('');
-  [].forEach.call(box.querySelectorAll('button[data-pid]'), b => b.onclick = async () => {
-    b.disabled = true;
-    const r = await api.closeSession(b.dataset.pid);
-    toast((r && r.ok) ? '已关闭这一路' : '这一路可能已经关了', !(r && r.ok));
-    await refresh(); await renderWins();
-  });
+      <span class="sp"></span>
+      <button class="casti${on ? ' on' : ''}" data-stat="${x.pid}" title="查看这一路的网络诊断" aria-label="网络诊断" aria-expanded="${on ? 'true' : 'false'}">i</button>
+      <button class="b2" data-pid="${x.pid}">关闭</button></div>`;
+  }).join('');
+  if (!box.__wired) {
+    box.__wired = true;
+    box.addEventListener('click', e => {
+      const info = e.target.closest('button[data-stat]');
+      if (info) { e.preventDefault(); e.stopPropagation(); toggleStats(parseInt(info.dataset.stat, 10)); return; }
+      const close = e.target.closest('button[data-pid]');
+      if (close) { e.preventDefault(); e.stopPropagation(); closeCast(close); return; }
+      const row = e.target.closest('.cast');
+      if (row) { e.preventDefault(); toggleStats(parseInt(row.dataset.pid, 10)); }
+    });
+  }
+  if (statsPid) placeStats();
   return castCount;
+}
+async function closeCast(b) {
+  b.disabled = true;
+  if (statsPid && String(statsPid) === b.dataset.pid) closeStats();
+  const r = await api.closeSession(b.dataset.pid);
+  toast((r && r.ok) ? '已关闭这一路' : '这一路可能已经关了', !(r && r.ok));
+  await refresh(); await renderWins();
 }
 async function renderConn() {
   const st = await api.state();
@@ -1126,6 +1199,7 @@ function switchPage(k) {
   [].forEach.call(document.querySelectorAll('.nav a'), a => a.classList.toggle('on', a.dataset.page === hl));
   [].forEach.call(document.querySelectorAll('.page'), p => p.classList.toggle('on', p.id === 'pg-' + k));
   $('outPanel').style.display = k === 'cast' ? '' : 'none';
+  if (k !== 'cast' && statsPid) closeStats();
   if (k === 'wins') { renderVdTemplates(); renderVdInfo(); renderApps(); renderRecent(); renderWins(); }
   if (k === 'conn') renderConn();
   if (k === 'diag') renderDiag();
@@ -1242,10 +1316,11 @@ function wifiRowHtml(f) {
   else if (reason === 'moved') tagText = 'IP 变了';
   else if (f.state === 'idle') { tagText = '端口可用'; tagOk = true; }
   else if (reason === 'auth') tagText = '需重新配对';
+  else if (reason === 'foreign') tagText = 'adb 服务被占用';
   else if (reason === 'notadb') tagText = '端口不是无线调试';
   else tagText = '端口不通';
   // 出问题的状态用红标签，原因收进气泡，悬停或点标签看
-  const isErr = /^(端口不通|端口不是无线调试|机器没回应|IP 被占用|需重新配对|连不上)$/.test(tagText);
+  const isErr = /^(端口不通|端口不是无线调试|adb 服务被占用|机器没回应|IP 被占用|需重新配对|连不上)$/.test(tagText);
   const tag = tagText
     ? `<span class="tag${tagOk ? ' ok' : (isErr ? ' bad tip' : ' no')}">${tagText}${isErr && f.note ? `<span class="bub">${f.note}</span>` : ''}</span>`
     : '';
@@ -1253,16 +1328,18 @@ function wifiRowHtml(f) {
   const tip = f.note && !isErr ? ` title="${esc(f.note)}"` : '';
   // 没回应/地址被占用的按身份找回；在线的端口不对就只扫这一台的端口
   const findLabel = (f.state === 'gone') ? '找回这台' : '找端口';
-  const needFind = isKnown && (f.state === 'gone' || f.state === 'fail');
+  const needFind = isKnown && (f.state === 'gone' || (f.state === 'fail' && reason !== 'foreign'));
   const reloc = needFind
     ? `<button class="b2 act" data-act="reloc" data-addr="${esc(addr)}" data-ip="${esc(f.hintIp || ip)}" data-name="${esc(nm)}" data-label="${findLabel}">${findLabel}</button>` : '';
+  const adbfix = reason === 'foreign'
+    ? `<button class="b2 act" data-act="adbfix">换回自带 adb</button>` : '';
   const con = (!hasPort || (isKnown && f.state === 'gone')) ? ''
     : `<button class="b2" data-act="con" data-addr="${esc(addr)}" data-kind="${esc(isKnown ? 'connect' : f.kind)}">连接</button>`;
   const forget = isKnown
     ? `<button class="b2" data-act="forget" data-addr="${esc(f.bookAddr || addr)}">忘记</button>` : '';
   return `<div class="row" data-addr="${esc(addr)}" data-kind="${esc(f.kind)}" data-name="${esc(nm)}"><span class="ic">${IC.wifi}</span>
       <div class="wmain"${tip}><div class="nm">${esc(nm)}${tag}</div>${sub}</div>
-      <div class="acts">${reloc}${con}${forget}</div></div>`;
+      <div class="acts">${adbfix}${reloc}${con}${forget}</div></div>`;
 }
 // 一台在线的都没有时的占位：只说明，不挂任何入口
 const WIFI_SCAN_EMPTY = '<div class="ph"><span>这次没扫到在线的设备，广播里也没有。确认手机和电脑在同一个网络、屏幕已点亮；也可以在最下面直接填 IP 和端口。</span></div>';
@@ -1285,6 +1362,13 @@ function bindWifiList() {
       await discoverOnce();
     };
     else if (act === 'reloc') b.onclick = e => { e.stopPropagation(); startRelocate(b, b.dataset.addr, b.dataset.ip, b.dataset.name); };
+    else if (act === 'adbfix') b.onclick = async e => {
+      e.stopPropagation();
+      b.disabled = true; b.textContent = '处理中…';
+      const r = await api.restartAdb();
+      toast((r && r.ok) ? ((r.text || '已换回自带 adb')) : ((r && r.text) || '换回自带 adb 失败'), !(r && r.ok));
+      await discoverOnce();
+    };
     else if (act === 'con') b.onclick = e => { e.stopPropagation(); wifiQuickConnect(b.dataset.addr, b.dataset.kind); };
   });
   // 点行本身只把地址填到底部输入框，不发起连接；要连还是点行内「连接」
@@ -1507,17 +1591,29 @@ $('fVd').onchange = () => {
   const top = $('chkTop'), bd = $('chkBorderless'), w = $('fWinW');
   if (!top) return;
   top.checked = localStorage.getItem('syrTop') === '1';
-  bd.checked = localStorage.getItem('syrBorderless') === '1';
+  // 默认改成有边框：旧版本的 syrBorderless 不再沿用，换新键；想无边框的人重新勾一次
+  bd.checked = localStorage.getItem('syrBorderlessDefault') === '1';
   w.value = localStorage.getItem('syrWinW') || '';
   top.onchange = () => localStorage.setItem('syrTop', top.checked ? '1' : '0');
-  bd.onchange = () => localStorage.setItem('syrBorderless', bd.checked ? '1' : '0');
+  bd.onchange = () => localStorage.setItem('syrBorderlessDefault', bd.checked ? '1' : '0');
   w.onchange = () => localStorage.setItem('syrWinW', w.value.trim());
   const lp = $('chkLegacy'), kb = $('fKbd');
   lp.checked = localStorage.getItem('syrLegacyPaste') === '1';
   lp.onchange = () => localStorage.setItem('syrLegacyPaste', lp.checked ? '1' : '0');
-  const ka = $('chkKeepAwake');
-  ka.checked = localStorage.getItem('syrKeepAwake') !== '0';
-  ka.onchange = () => localStorage.setItem('syrKeepAwake', ka.checked ? '1' : '0');
+  const sc = $('fScreen');
+  if (sc) {
+    // 旧版的「不让设备息屏」勾掉过的人迁移成「交给设备」，其余保持常亮
+    let sv = localStorage.getItem('syrScreen');
+    if (!sv) sv = localStorage.getItem('syrKeepAwake') === '0' ? 'system' : 'keep';
+    sc.value = sv;
+    localStorage.setItem('syrScreen', sv);
+    sc.onchange = () => localStorage.setItem('syrScreen', sc.value);
+  }
+  const buf = $('fBuf');
+  if (buf) {
+    buf.value = localStorage.getItem('syrBuf') || '0';
+    buf.onchange = () => localStorage.setItem('syrBuf', buf.value);
+  }
   kb.value = localStorage.getItem('syrKbd') || 'sys';
   kb.onchange = () => {
     localStorage.setItem('syrKbd', kb.value);
@@ -1670,6 +1766,295 @@ async function refreshMonitors() {
 }
 
 /* ── 提示气泡：JS 固定浮层（脱离滚动容器裁剪，自动防溢出视口） ── */
+/* ── 投屏诊断面板：贴在「正在投屏」行旁边，只在打开时轮询 ── */
+function toggleStats(pid) {
+  if (!pid) return;
+  if (statsPid === pid) { closeStats(); return; }
+  openStats(pid);
+}
+function openStats(pid) {
+  if (statsPid) closeStats();
+  statsPid = pid; statsLast = null;
+  const p = $('statPop'); if (!p) return;
+  p.classList.add('show'); p.removeAttribute('data-side');
+  $('spName').textContent = '—';
+  $('spMeta').textContent = '正在读取…';
+  $('spStale').hidden = true;
+  $('spBody').innerHTML = '<div class="sp-note">正在读取这一路的数据…</div>';
+  const row = document.querySelector('#castList .cast[data-pid="' + pid + '"]');
+  if (row) {
+    row.classList.add('on');
+    const ib = row.querySelector('.casti[data-stat]');
+    if (ib) { ib.classList.add('on'); ib.setAttribute('aria-expanded', 'true'); }
+  }
+  placeStats();
+  statsTick();
+  statsTimer = setInterval(statsTick, 1000);
+}
+function closeStats() {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = 0; }
+  if (statsPid) { try { api.sessionStats(statsPid, false); } catch (e) { } }
+  statsPid = 0; statsLast = null;
+  const p = $('statPop');
+  if (p) { p.classList.remove('show'); p.removeAttribute('data-side'); }
+  [].forEach.call(document.querySelectorAll('#castList .casti.on'), b => { b.classList.remove('on'); b.setAttribute('aria-expanded', 'false'); });
+  [].forEach.call(document.querySelectorAll('#castList .cast.on'), b => b.classList.remove('on'));
+}
+function placeStats() {
+  if (!statsPid) return;
+  const panel = $('statPop'); if (!panel) return;
+  const row = document.querySelector('#castList .cast[data-pid="' + statsPid + '"]');
+  if (!row) return;
+  if (!panel.classList.contains('show')) panel.classList.add('show');
+  const rr = row.getBoundingClientRect();
+  const w = panel.offsetWidth || 300;
+  const h = panel.offsetHeight || 260;
+  let side = 'left';
+  let x = rr.left - w - 10;
+  if (x < 8) { x = rr.right + 10; side = 'right'; }
+  if (x + w > innerWidth - 8) x = Math.max(8, innerWidth - w - 8);
+  let y = rr.top + rr.height / 2 - h / 2;
+  y = Math.max(8, Math.min(y, innerHeight - h - 8));
+  panel.style.left = x + 'px';
+  panel.style.top = y + 'px';
+  panel.setAttribute('data-side', side);
+  const ay = Math.max(12, Math.min(h - 18, rr.top + rr.height / 2 - y));
+  panel.style.setProperty('--ay', ay + 'px');
+}
+async function statsTick() {
+  if (statsBusy || !statsPid) return;
+  statsBusy = true;
+  try {
+    const r = await api.sessionStats(statsPid, true);
+    if (!r) return;
+    if (r.found) { renderStats(r); return; }
+    if (r.ended) {
+      if (r.ended.replacementPid) {
+        statsPid = r.ended.replacementPid;
+        toast('这一路已自动重连，诊断跟到新一路');
+        await renderWins();
+        return;
+      }
+      renderEnded(r.ended);
+      return;
+    }
+    closeStats();
+  } catch (e) {
+  } finally {
+    statsBusy = false;
+  }
+}
+function spRow(k, v, cls) {
+  return '<div class="sp-row"><span class="k">' + esc(k) + '</span><span class="v ' + (cls || '') + '">' + v + '</span></div>';
+}
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? (h + '时' + m + '分') : (m ? (m + '分' + s + '秒') : (s + '秒'));
+}
+function num(v, d) {
+  const n = Number(v);
+  return isFinite(n) ? n.toFixed(d == null ? 1 : d) : '0';
+}
+function spark(points, opt) {
+  opt = opt || {};
+  const W = 240, H = 32, PAD = 3, WIN = 60000, now = Date.now();
+  const vals = [];
+  (points || []).forEach(p => { if (p.v != null && isFinite(Number(p.v))) vals.push(Number(p.v)); });
+  if (!vals.length) return '<div class="sp-note">采集中…</div>';
+  let max = Math.max.apply(null, vals);
+  max = Math.max(max, opt.min || 1) * 1.15;
+  const X = t => W - Math.max(0, Math.min(WIN, now - t)) / WIN * W;
+  const Y = v => H - PAD - Math.max(0, Math.min(max, v)) / max * (H - PAD * 2);
+  const segs = []; let cur = [];
+  (points || []).forEach(p => {
+    if (p.v == null || !isFinite(Number(p.v))) { if (cur.length) { segs.push(cur); cur = []; } }
+    else cur.push(p);
+  });
+  if (cur.length) segs.push(cur);
+  const stroke = opt.color || 'var(--accent)';
+  const fill = opt.fill || 'none';
+  let area = '', line = '';
+  segs.forEach(s => {
+    if (!s.length) return;
+    if (fill !== 'none')
+      area += 'M' + X(s[0].t).toFixed(1) + ' ' + (H - PAD) + ' ' +
+        s.map(p => 'L' + X(p.t).toFixed(1) + ' ' + Y(Number(p.v)).toFixed(1)).join(' ') +
+        ' L' + X(s[s.length - 1].t).toFixed(1) + ' ' + (H - PAD) + ' Z';
+    line += 'M' + s.map(p => X(p.t).toFixed(1) + ' ' + Y(Number(p.v)).toFixed(1)).join(' L');
+  });
+  const marks = (points || []).filter(p => p.v == null).map(p =>
+    '<rect x="' + X(p.t).toFixed(1) + '" y="' + (H - 4) + '" width="1.3" height="3" fill="var(--bad)"/>').join('');
+  return '<svg class="spark" viewBox="0 0 240 32" preserveAspectRatio="none">'
+    + (area ? '<path d="' + area + '" fill="' + fill + '" stroke="none"/>' : '')
+    + (line ? '<path d="' + line + '" fill="none" stroke="' + stroke + '" stroke-width="1.4" vector-effect="non-scaling-stroke"/>' : '')
+    + marks + '</svg>';
+}
+function renderStats(r) {
+  statsLast = r;
+  const d = r.dev || {}, cfg = r.cfg || {}, fps = r.fps || {}, host = r.host || {};
+  const wifi = d.wifi || {}, phy = d.phy || {}, load = d.load || {}, mem = d.mem || {}, tcp = d.tcp || {}, series = r.series || {};
+  $('spName').textContent = r.deviceName || r.deviceId || '这一路';
+  const meta = [r.mode || '', r.size || '', '已运行 ' + fmtDur(r.uptimeSec)];
+  if (r.retryGen) meta.push('已重连 ' + r.retryGen + ' 次');
+  $('spMeta').textContent = meta.filter(Boolean).join(' · ');
+
+  const stale = $('spStale');
+  stale.className = 'sp-stale';
+  if (d.available === false) {
+    stale.hidden = false;
+    stale.textContent = '正在采集设备侧数据（约 1–5 秒）' + (d.err ? '：' + d.err : '');
+  } else if (d.stale) {
+    stale.hidden = false;
+    stale.className = 'sp-stale' + (d.ok === false ? ' bad' : '');
+    stale.textContent = '设备侧数据已 ' + Math.round((d.ageMs || 0) / 1000) + ' 秒没更新' + (d.err ? '：' + d.err : '');
+  } else if (d.ok === false && d.err) {
+    stale.hidden = false;
+    stale.className = 'sp-stale bad';
+    stale.textContent = '设备侧采样失败：' + d.err;
+  } else { stale.hidden = true; stale.textContent = ''; }
+
+  const lossCls = host.lossPct >= 5 ? 'bad' : (host.lossPct >= 1 ? 'warn' : 'ok');
+  const jitCls = host.jitterMs >= 30 ? 'bad' : (host.jitterMs >= 10 ? 'warn' : 'ok');
+  const rssiCls = wifi.rssiDbm <= -75 ? 'bad' : (wifi.rssiDbm <= -65 ? 'warn' : 'ok');
+  const pingPts = (series.ping || []).map(p => ({ t: p.t, v: p.ms }));
+  const txPts = (series.tx || []).map(p => ({ t: p.t, v: p.mbps }));
+  const retryPts = (series.retry || []).map(p => ({ t: p.t, v: p.n }));
+
+  let html = '<div class="sp-sec"><h4>本次投屏</h4>';
+  html += spRow('配置', esc((cfg.bitrateLabel || '—') + ' · ' + (cfg.maxFps || '—') + ' 帧' + (cfg.audio === 'off' ? ' · 无声音' : '') + (cfg.videoBuffer && cfg.videoBuffer !== '0' ? ' · 缓冲 ' + cfg.videoBuffer + 'ms' : '')));
+  html += spRow('实际帧率', fps.available
+    ? (num(fps.cur, 0) + ' 帧 · 跳 ' + (fps.skippedLast || 0) + '/秒')
+    : '暂无数据（等引擎输出）', fps.available ? (fps.cur < 20 ? 'warn' : 'ok') : 'dim');
+  html += spRow('编解码', esc((cfg.videoCodec || '—') + (cfg.audio === 'on'
+    ? ' / ' + (cfg.audioCodecActual || cfg.audioCodec || '—') + ' ' + (cfg.audioKbps || '')
+    : ' / 无音频')));
+  const streamTxt = r.streamSize ? String(r.streamSize).replace('x', '×') : '—';
+  html += spRow('采集 / 窗口', esc(streamTxt + (r.size ? ' · 窗口 ' + r.size : '')), '');
+  html += spRow('实测吞吐', d.available ? (num(phy.txMbps, 1) + ' Mbps') : '—', '');
+  html += txPts.length ? spark(txPts, { min: 1, color: 'var(--accent)', fill: 'var(--accent-soft)' }) : '';
+  html += '</div>';
+
+  html += '<div class="sp-sec"><h4>网络</h4>';
+  if (host.available === false) {
+    html += '<div class="sp-note">USB 连接，没有网络心跳；设备侧负载和内存仍可参考。</div>';
+  } else {
+    html += spRow('Ping 当前', host.pingCurMs >= 0 ? (num(host.pingCurMs, 0) + ' ms') : '超时', host.pingCurMs >= 0 ? '' : 'bad');
+    html += spRow('平均 / 最大', num(host.pingAvgMs, 0) + ' / ' + num(host.pingMaxMs, 0) + ' ms');
+    html += spRow('抖动', num(host.jitterMs, 1) + ' ms', jitCls);
+    html += spRow('丢包（60 秒）', num(host.lossPct, 1) + '%', lossCls);
+    html += pingPts.length ? spark(pingPts, { min: 5, color: 'var(--accent-2)' }) : '';
+    html += spRow('TCP', esc(host.tcpStates || (host.tcpConns ? host.tcpConns + ' 条' : '—')), host.tcpConns ? 'ok' : 'dim');
+    html += spRow('投屏进程 CPU', num(host.cpuPct, 1) + '%', host.cpuPct >= 60 ? 'warn' : '');
+  }
+  html += '</div>';
+
+  html += '<div class="sp-sec"><h4>设备无线</h4>';
+  if (r.link === 'usb') html += '<div class="sp-note">这是 USB 投屏；下面是设备自己的 Wi-Fi，不是投屏通道。</div>';
+  if (d.available) {
+    html += spRow('信号 / 链路', (wifi.rssiDbm || '—') + ' dBm · ' + (wifi.linkMbps || '—') + ' Mbps', rssiCls);
+    html += spRow('频段', esc((wifi.band || '—') + (wifi.freqMhz ? ' · ' + wifi.freqMhz + ' MHz' : '')));
+    html += spRow('热点', esc(wifi.ssid || '—'));
+    html += spRow('重试 / 丢失', num(phy.retriedPerSec, 1) + ' / ' + num(phy.lostPerSec, 1) + ' 包/秒',
+      (phy.retriedPerSec > 10 || phy.lostPerSec > 0) ? 'warn' : '');
+    html += spRow('累计重试率', num(phy.retryRatioPct, 1) + '%', phy.retryRatioPct >= 20 ? 'warn' : '');
+    html += retryPts.length ? spark(retryPts, { min: 1, color: 'var(--warn)' }) : '';
+    html += spRow('adb 隧道', esc('RTO ' + (tcp.rto || '—') + 's · cwnd ' + (tcp.cwnd || '—') + (tcp.retrans ? ' · 重传 ' + tcp.retrans : '')));
+  } else {
+    html += '<div class="sp-note">' + esc(d.err || '设备侧数据还没采到') + '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="sp-sec"><h4>设备</h4>';
+  if (d.available) {
+    const cpuCls = load.cpuPct >= 85 ? 'bad' : (load.cpuPct >= 60 ? 'warn' : 'ok');
+    html += spRow('CPU / 负载', num(load.cpuPct, 1) + '% · ' + num(load.l1, 2) + ' / ' + num(load.l5, 2) + ' / ' + num(load.l15, 2) + (load.nproc ? ' · ' + load.nproc + ' 核' : ''), cpuCls);
+    html += spRow('内存 可用/总', (mem.availMb || 0) + ' / ' + (mem.totalMb || 0) + ' MB');
+    const swapPct = mem.swapTotalMb > 0 ? (mem.swapUsedMb || 0) * 100 / mem.swapTotalMb : 0;
+    html += spRow('交换 使用/总', num((mem.swapUsedMb || 0) / 1024, 1) + ' / ' + num((mem.swapTotalMb || 0) / 1024, 1) + ' GB', swapPct >= 50 ? 'warn' : '');
+  } else {
+    html += '<div class="sp-note">暂无设备侧数据</div>';
+  }
+  html += '</div>';
+
+  const evts = r.events || [];
+  html += '<div class="sp-sec"><h4>最近事件</h4>';
+  html += evts.length
+    ? '<div class="sp-evt">' + evts.slice(-6).map(esc).join('\n') + '</div>'
+    : '<div class="sp-note">还没有事件</div>';
+  html += '</div>';
+  $('spBody').innerHTML = html;
+  $('spUpd').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  placeStats();
+}
+function renderEnded(e) {
+  $('spName').textContent = e.deviceName || e.deviceId || '这一路';
+  $('spMeta').textContent = [e.mode || '', e.size || '', '已结束'].filter(Boolean).join(' · ');
+  const stale = $('spStale');
+  stale.hidden = false;
+  stale.className = 'sp-stale bad';
+  stale.textContent = '这一路已结束（退出码 ' + e.code + (e.abnormal ? '，异常' : '') + '）';
+  let html = '<div class="sp-sec"><h4>最后的输出</h4><div class="sp-tail">'
+    + (e.tail || []).map(esc).join('\n') + '</div></div>';
+  const evts = e.events || [];
+  html += '<div class="sp-sec"><h4>最近事件</h4><div class="sp-evt">' + evts.map(esc).join('\n') + '</div></div>';
+  $('spBody').innerHTML = html;
+  $('spUpd').textContent = '已结束';
+  placeStats();
+}
+function buildDiagText(r) {
+  const d = r.dev || {}, cfg = r.cfg || {}, fps = r.fps || {}, host = r.host || {};
+  const wifi = d.wifi || {}, phy = d.phy || {}, load = d.load || {}, mem = d.mem || {}, tcp = d.tcp || {};
+  const lines = [];
+  lines.push('水月清影 · 投屏诊断');
+  lines.push('设备: ' + (r.deviceName || r.deviceId) + ' (' + r.deviceId + ')');
+  lines.push('模式: ' + r.mode + ' · ' + r.size + ' · 已运行 ' + (r.uptimeSec || 0) + 's · 重连 ' + (r.retryGen || 0) + ' 次');
+  lines.push('配置: ' + (cfg.bitrateLabel || '—') + ' / ' + (cfg.maxFps || '—') + 'fps / 缓冲 ' + (cfg.videoBuffer || '0') + 'ms / 音频 ' + (cfg.audio || '—') + ' ' + (cfg.audioCodec || '') + ' ' + (cfg.audioKbps || ''));
+  lines.push('实际帧率: ' + (fps.available ? fps.cur + ' fps' : '无数据') + ', 跳帧 ' + fps.skippedLast + '/s, 每分钟 ' + fps.skippedPerMin);
+  lines.push('采集/窗口: ' + (r.streamSize || '—') + ' / ' + (r.size || '—') + (cfg.maxSize ? ' (max-size=' + cfg.maxSize + ')' : ''));
+  lines.push('吞吐(设备 wlan0): ' + (phy.txMbps || 0) + ' Mbps');
+  lines.push('Ping: 当前 ' + (host.pingCurMs >= 0 ? host.pingCurMs + 'ms' : '超时') + ' / 平均 ' + (host.pingAvgMs || 0) + 'ms / 最大 ' + (host.pingMaxMs || 0) + 'ms / 抖动 ' + (host.jitterMs || 0) + 'ms / 丢包 ' + (host.lossPct || 0) + '%');
+  lines.push('TCP: 连接 ' + (host.tcpConns || 0) + ' · ' + (host.tcpStates || '—'));
+  lines.push('投屏进程 CPU: ' + (host.cpuPct || 0) + '%');
+  if (d.available) {
+    lines.push('Wi-Fi: ' + (wifi.ssid || '—') + ' ' + (wifi.rssiDbm || 0) + 'dBm ' + (wifi.linkMbps || 0) + 'Mbps ' + (wifi.band || '') + ' ' + (wifi.freqMhz || 0) + 'MHz');
+    lines.push('无线重试: ' + (phy.retriedPerSec || 0) + '/s 丢失 ' + (phy.lostPerSec || 0) + '/s 累计重试率 ' + (phy.retryRatioPct || 0) + '%');
+    lines.push('adb 隧道: RTO ' + (tcp.rto || '—') + 's cwnd ' + (tcp.cwnd || '—') + (tcp.retrans ? ' 重传 ' + tcp.retrans : ''));
+    lines.push('CPU/负载: ' + (load.cpuPct || 0) + '% · ' + (load.l1 || 0) + '/' + (load.l5 || 0) + '/' + (load.l15 || 0) + ' (' + (load.nproc || 0) + '核)');
+    lines.push('内存: 可用 ' + (mem.availMb || 0) + 'MB / 总 ' + (mem.totalMb || 0) + 'MB, 交换 ' + (mem.swapUsedMb || 0) + '/' + (mem.swapTotalMb || 0) + 'MB');
+  } else lines.push('设备侧: ' + (d.err || '无数据'));
+  lines.push('事件: ' + (r.events || []).join(' | '));
+  return lines.join('\n');
+}
+async function copyDiagnostics() {
+  if (!statsLast) return toast('还没有数据可复制', true);
+  const text = buildDiagText(statsLast);
+  try {
+    const r = await api.copyText(text);
+    if (r && r.ok) return toast('诊断信息已复制');
+    throw new Error((r && r.error) || '复制失败');
+  } catch (e) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('诊断信息已复制');
+    } catch (e2) {
+      toast('复制失败：' + (e2.message || e.message || '剪贴板被占用'), true);
+    }
+  }
+}
+$('spClose').onclick = () => closeStats();
+$('spCopy').onclick = copyDiagnostics;
+document.addEventListener('click', e => {
+  if (statsPid && !e.target.closest('#statPop') && !e.target.closest('.cast')) closeStats();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && statsPid) closeStats(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && statsPid) closeStats(); });
+['.main', '.out'].forEach(sel => {
+  const el = document.querySelector(sel);
+  if (el) el.addEventListener('scroll', () => { if (statsPid) requestAnimationFrame(placeStats); });
+});
+window.addEventListener('resize', () => { if (statsPid) placeStats(); });
+
 const bubHost = (() => {
   const h = document.createElement('div');
   h.id = 'bubHost';
